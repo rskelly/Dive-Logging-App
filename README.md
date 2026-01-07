@@ -1,5 +1,7 @@
 # NDST Dive Logging App
 
+Note: This project has been imported to DFO MSEA's gitlab page. You can find the version that is still being activitely developed here: https://gitlab.com/dfo-msea/Dive-Logging-App
+
 __Main author:__  Jessica Nephin     
 __Contact:__      jessica.nephin@dfo-mpo.gc.ca
 
