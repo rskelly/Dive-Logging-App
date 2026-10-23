@@ -1,7 +1,7 @@
 """Building blocks for the entry forms."""
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import (QComboBox, QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout,
+from PySide6.QtCore import QDate, Qt, Signal
+from PySide6.QtWidgets import (QComboBox, QDateEdit, QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout,
                                QLabel, QLineEdit, QListWidget, QListWidgetItem, QPushButton,
                                QVBoxLayout, QWidget)
 
@@ -54,6 +54,23 @@ class EntryForm(QDialog):
 
     def validate(self):
         self.submit.setEnabled(all(check() for check in self._checks))
+
+    def add_hint(self, check, message, *signals):
+        """Like add_check, with a message under the last field while check() fails."""
+        hint = QLabel(message)
+        hint.setStyleSheet('color: #c0392b')
+        hint.setWordWrap(True)
+        self.form.addRow('', hint)
+
+        def checked():
+            ok = check()
+            self.form.setRowVisible(hint, not ok)
+            return ok
+        self.add_check(checked, *signals)
+        checked()
+
+    def saved(self, values):
+        """Called after the form's values are saved."""
 
     def showEvent(self, event):
         self.validate()
@@ -143,6 +160,25 @@ class MultiChoiceField(QListWidget):
                 known[v] = self._add(unknown_label(v) if unknown_label else str(v), v)
         for v, item in known.items():
             item.setCheckState(Qt.CheckState.Checked if v in values else Qt.CheckState.Unchecked)
+
+
+class DateField(QDateEdit):
+    """A date (YYYY-MM-DD) with a calendar. Defaults to today."""
+    changed = Signal()
+
+    def __init__(self, value=None, parent=None):
+        super().__init__(parent)
+        self.setCalendarPopup(True)
+        self.setDisplayFormat('yyyy-MM-dd')
+        self.set_value(value)
+        self.dateChanged.connect(self.changed)
+
+    def value(self):
+        return self.date().toString('yyyy-MM-dd')
+
+    def set_value(self, value):
+        date = QDate.fromString(value or '', 'yyyy-MM-dd')
+        self.setDate(date if date.isValid() else QDate.currentDate())
 
 
 class TimeField(QWidget):

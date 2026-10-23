@@ -23,6 +23,12 @@ INSTRUMENTS = [
     {'id': 103, 'name': 'Compass', 'serial_number': '12345', 'retired': None, 'model': _model('Generic', 'Compass', 'Compass')},
 ]
 
+PLATFORMS = [
+    {'id': 201, 'name': 'John P. Tully', 'serial_number': None, 'retired': None, 'model': _model('CCGS', 'Tully', 'Ship')},
+    {'id': 202, 'name': 'Phantom', 'serial_number': '428', 'retired': None, 'model': _model('Deep Ocean', 'Phantom', 'ROV')},
+    {'id': 203, 'name': 'Delta', 'serial_number': None, 'retired': None, 'model': _model('Delta Oceanographics', 'Delta', 'Submersible')},
+]
+
 
 class MockAPI:
     """The MSEA API's people and instruments endpoints, paginated like the real
@@ -30,7 +36,7 @@ class MockAPI:
     as it can behind a proxy."""
 
     def __init__(self, host='127.0.0.1'):
-        self.people, self.instruments = list(PEOPLE), list(INSTRUMENTS)
+        self.people, self.instruments, self.platforms = list(PEOPLE), list(INSTRUMENTS), list(PLATFORMS)
         self.fail = None  # path that answers 500
         self.requests = []
         api = self
@@ -47,6 +53,9 @@ class MockAPI:
                     return self._send(500, {'detail': 'boom'})
                 if url.path == '/api/v2/shared/people/':
                     return self._send(200, {'count': len(api.people), 'next': None, 'previous': None, 'results': api.people})
+                if url.path == '/api/v2/rov/platforms/':
+                    return self._send(200, {'count': len(api.platforms), 'next': None, 'previous': None,
+                                            'results': api.platforms})
                 if url.path == '/api/v2/rov/instruments/':
                     page = int(query.get('page', ['1'])[0])
                     results = api.instruments[(page - 1) * 2:page * 2]

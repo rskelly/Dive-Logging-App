@@ -1,4 +1,4 @@
-"""Lookups of people and instruments from the MSEA ReST API (msea-rov-db).
+"""Lookups of people, instruments and platforms from the MSEA ReST API (msea-rov-db).
 
 They are cached in a SQLite file because the app is often used offline, and are
 only refreshed when the user asks. A failed refresh leaves the cache as it was.
@@ -28,11 +28,17 @@ SCHEMA = [
     'CREATE TABLE IF NOT EXISTS instruments ('
     'id INTEGER PRIMARY KEY, name TEXT, serial_number TEXT NOT NULL, '
     'brand TEXT, model TEXT, type TEXT, retired TEXT)',
+    # Ships, ROVs, submersibles, ... type is the equipment type: 'Ship' for ships
+    'CREATE TABLE IF NOT EXISTS platforms ('
+    'id INTEGER PRIMARY KEY, name TEXT NOT NULL, serial_number TEXT, '
+    'brand TEXT, model TEXT, type TEXT, retired TEXT)',
     # One row: when and from where the lookups were last updated
     'CREATE TABLE IF NOT EXISTS lookups_info (updated_on TEXT NOT NULL, source TEXT NOT NULL)',
 ]
 PEOPLE_COLUMNS = ['id', 'first_name', 'last_name']
 INSTRUMENT_COLUMNS = ['id', 'name', 'serial_number', 'brand', 'model', 'type', 'retired']
+PLATFORM_COLUMNS = INSTRUMENT_COLUMNS
+SHIP_TYPE = 'Ship'  # the API's equipment type for ships
 
 
 class LookupsError(Exception):
@@ -93,29 +99,35 @@ def _get(record, *keys):
     return record
 
 
+def _equipment_row(item):
+    return (item['id'], item.get('name'), item.get('serial_number'),
+            _get(item, 'model', 'brand_name'), _get(item, 'model', 'model_name'),
+            _get(item, 'model', 'equipment_type', 'name'), item.get('retired'))
+
+
 def fetch_lookups(api_url, proxy=''):
-    """Download people and instruments as lists of row tuples. Raises on any
-    error, including an empty list."""
+    """Download people, instruments and platforms as lists of row tuples. Raises
+    on any error, including an empty list."""
     opener = _opener(proxy)
-    people = fetch_all(f'{api_url}/shared/people/', opener)
-    instruments = fetch_all(f'{api_url}/rov/instruments/', opener)
-    if not people:
-        raise LookupsError('The API returned no people.')
-    if not instruments:
-        raise LookupsError('The API returned no instruments.')
+    lookups = {
+        'people': fetch_all(f'{api_url}/shared/people/', opener),
+        'instruments': fetch_all(f'{api_url}/rov/instruments/', opener),
+        'platforms': fetch_all(f'{api_url}/rov/platforms/', opener),
+    }
+    for kind, records in lookups.items():
+        if not records:
+            raise LookupsError(f'The API returned no {kind}.')
     return {
-        'people': [(p['id'], p['first_name'], p['last_name']) for p in people],
-        'instruments': [(i['id'], i.get('name'), i['serial_number'],
-                         _get(i, 'model', 'brand_name'), _get(i, 'model', 'model_name'),
-                         _get(i, 'model', 'equipment_type', 'name'), i.get('retired'))
-                        for i in instruments],
+        'people': [(p['id'], p['first_name'], p['last_name']) for p in lookups['people']],
+        'instruments': [_equipment_row(i) for i in lookups['instruments']],
+        'platforms': [_equipment_row(p) for p in lookups['platforms']],
     }
 
 
 def update_lookups(path, api_url, proxy=''):
     """Replace the lookups in the db at path with the API's. Everything is
     downloaded before the db is touched, and the replacement is one transaction.
-    Returns the number of people and instruments."""
+    Returns the number of people, instruments and platforms."""
     api_url = api_url.rstrip('/')
     lookups = fetch_lookups(api_url, proxy)
     updated_on = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
@@ -125,8 +137,9 @@ def update_lookups(path, api_url, proxy=''):
         with con:
             con.execute('DELETE FROM people')
             con.executemany('INSERT INTO people VALUES (?, ?, ?)', lookups['people'])
-            con.execute('DELETE FROM instruments')
-            con.executemany('INSERT INTO instruments VALUES (?, ?, ?, ?, ?, ?, ?)', lookups['instruments'])
+            for table in ('instruments', 'platforms'):
+                con.execute(f'DELETE FROM {table}')
+                con.executemany(f'INSERT INTO {table} VALUES (?, ?, ?, ?, ?, ?, ?)', lookups[table])
             con.execute('DELETE FROM lookups_info')
             con.execute('INSERT INTO lookups_info VALUES (?, ?)', (updated_on, api_url))
     finally:
@@ -170,6 +183,17 @@ class Lookups:
         return [dict(r) for r in self.con.execute(
             f'SELECT {", ".join(INSTRUMENT_COLUMNS)} FROM instruments ORDER BY brand, model, name')]
 
+    def platforms(self):
+        return [dict(r) for r in self.con.execute(
+            f'SELECT {", ".join(PLATFORM_COLUMNS)} FROM platforms ORDER BY name')]
+
+    def ships(self):
+        return [p for p in self.platforms() if p['type'] == SHIP_TYPE]
+
+    def subs(self):
+        """Platforms that dive: everything but ships."""
+        return [p for p in self.platforms() if p['type'] != SHIP_TYPE]
+
     def info(self):
         """{'updated_on', 'source'} of the last update, or None if never updated."""
         row = self.con.execute('SELECT updated_on, source FROM lookups_info').fetchone()
@@ -178,6 +202,12 @@ class Lookups:
 
 def person_label(person):
     return f"{person['first_name']} {person['last_name']}"
+
+
+def platform_label(platform):
+    """'name (serial)', or 'name' when there's no serial; retired ones marked."""
+    label = platform['name'] + (f" ({platform['serial_number']})" if platform['serial_number'] else '')
+    return label + ' [retired]' if platform['retired'] else label
 
 
 def instrument_label(instrument):

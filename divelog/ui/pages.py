@@ -59,8 +59,9 @@ class TablePage(QWidget):
         add.clicked.connect(self.add)
         edit.clicked.connect(self.edit)
         delete.clicked.connect(self.delete)
+        self.buttons = (add, edit, delete)
         buttons = QHBoxLayout()
-        for b in (add, edit, delete):
+        for b in self.buttons:
             buttons.addWidget(b)
         buttons.addStretch()
 
@@ -74,7 +75,10 @@ class TablePage(QWidget):
         self.refresh()
 
     def refresh(self):
-        self.rows = self.store.log.rows(self.table_name)
+        # Empty and disabled while no cruise is open
+        for b in self.buttons:
+            b.setEnabled(self.store.log is not None)
+        self.rows = self.store.log.rows(self.table_name) if self.store.log else []
         _fill(self.table, [h for h, _ in self.columns], [[f(r) for _, f in self.columns] for r in self.rows])
 
     def selected(self):
@@ -89,7 +93,9 @@ class TablePage(QWidget):
         form = self.form_class(self.store, parent=self)
         try:
             if form.exec():
-                self.store.log.insert(self.table_name, form.values())
+                values = form.values()
+                self.store.log.insert(self.table_name, values)
+                form.saved(values)
                 self.store.notify()
         finally:
             form.deleteLater()
@@ -103,6 +109,7 @@ class TablePage(QWidget):
             if form.exec():
                 values = form.values()
                 self.store.log.update(self.table_name, row['row_id'], {c: values[c] for c in form.EDITABLE})
+                form.saved(values)
                 self.store.notify()
         finally:
             form.deleteLater()
@@ -120,12 +127,14 @@ class TablePage(QWidget):
 
 
 class LookupPage(QWidget):
-    """People or instruments: read-only, from the API. kind: 'people' or 'instruments'."""
+    """People, instruments or platforms: read-only, from the API. kind: 'people', 'instruments' or 'platforms'."""
 
     COLUMNS = {
         'people': [('First name', 'first_name'), ('Last name', 'last_name'), ('ID', 'id')],
         'instruments': [('Name', 'name'), ('Serial number', 'serial_number'), ('Brand', 'brand'),
                         ('Model', 'model'), ('Type', 'type'), ('Retired', 'retired'), ('ID', 'id')],
+        'platforms': [('Name', 'name'), ('Serial number', 'serial_number'), ('Brand', 'brand'),
+                      ('Model', 'model'), ('Type', 'type'), ('Retired', 'retired'), ('ID', 'id')],
     }
 
     def __init__(self, store, title, kind, parent=None):
@@ -233,9 +242,10 @@ class ChecksPage(QScrollArea):
 
     def refresh(self):
         log = self.store.log
-        dives, transects = log.rows('dives'), log.rows('transects')
+        rows = (lambda table: log.rows(table)) if log else (lambda table: [])
+        dives, transects = rows('dives'), rows('transects')
         for table, box in self.totals.items():
-            box.value.setText(str(len(log.rows(table))))
+            box.value.setText(str(len(rows(table))))
         self.warnings.setText(warnings_html(dives, transects))
 
         self.dive_lengths.set_data([(d['name'], duration(d['start_time'], d['end_time'])) for d in dives])

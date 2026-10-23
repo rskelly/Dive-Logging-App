@@ -20,8 +20,9 @@ Not chosen: bundling portable R with the Shiny app behind a browser or Electron 
 ## 1. Output contract
 Write this down before any UI work, and test against it.
 
-**`divelogging-db.sqlite`**
-- Same tables, columns and column order as `db.R`: `cruise`, `dives`, `transects`, `equipconfig`, `diveconfig`. All columns are TEXT except `equipconfig.instrument_id`, which is INTEGER.
+**Cruise logs** (one per cruise; originally one `divelogging-db.sqlite`)
+- Same tables as `db.R`: `cruise`, `dives`, `transects`, `equipconfig`, `diveconfig`, starting with the same columns in the same order. All are TEXT except the `*_id` columns, which are INTEGER.
+- **Added later** (see [Cruise sessions](#cruise-sessions)), at the end of their tables so Shiny columns stay first: `cruise.start_date`, `end_date` (YYYY-MM-DD) and `ship_id` (a platform), and `equipconfig.platform_id`. Older logs get them when opened. `cruise` holds one row, the log's cruise; `diveconfig.ship_config` is only set in Shiny logs.
 - Same guard: refuse to open an old log whose `equipconfig` has `short_code` instead of `instrument_id`.
 - `row_id`: UUID4.
 - Pilots and dive-config instrument lists: `;`-separated (pilots are person IDs).
@@ -31,11 +32,11 @@ Write this down before any UI work, and test against it.
   - When *reading* a log (Checks plots, editing), accept both formats, since logs written by the current Shiny version use `T-`.
 
 **`lookups.sqlite`**
-- Same tables: `people (id, first_name, last_name)`, `instruments (id, name, serial_number, brand, model, type, retired)` and `lookups_info (updated_on, source)`.
-- Same update rule: download every page of both endpoints first, then replace both tables and `lookups_info` in one transaction. A failed or empty download changes nothing.
+- Same tables: `people (id, first_name, last_name)`, `instruments (id, name, serial_number, brand, model, type, retired)` and `lookups_info (updated_on, source)`, plus (added later) `platforms`, with the same columns as `instruments`.
+- Same update rule: download every page of every endpoint first, then replace the tables and `lookups_info` in one transaction. A failed or empty download changes nothing.
 
 **Exports**
-- Same location and names: `Exports/YYYY-MM-DD/<cruise>_<table>.csv`, one file per log table plus `people` and `instruments`.
+- Same names: `Exports/YYYY-MM-DD/<cruise>_<table>.csv`, one file per log table plus `people`, `instruments` and (added later) `platforms`. `Exports` is next to the cruise's log.
 - Same columns, in the same order, with a header row.
 - **Change:** standard CSV as written by Python's `csv` module: UTF-8, Windows (CRLF) line endings, values quoted only when needed, missing values as empty fields rather than `NA`.
 
@@ -51,20 +52,21 @@ DiveLogging.bat   launcher: finds Python, runs setup, starts the app (section 5)
 run.py            bootstrap, standard library only: builds/checks the virtual environment, starts the app
 requirements.txt  exact versions and hashes of PySide6 and truststore
 divelog/
-  db.py         schema, create_log_db(), old-log guard      (port of db.R)
-  lookups.py    fetch_all(), update_lookups()               (port of lookups.R)
+  db.py         cruise log schema, upgrades of older logs, old-log guard
+  lookups.py    people, instruments, platforms: fetch_all(), update_lookups()
   export.py     CSV export
   formats.py    time (read both formats), config-string, ID-list helpers
   ui/
-    main_window.py   sidebar + stacked pages, header buttons
-    table_page.py    generic Add/Edit/Delete page over one table
-    forms/           cruise, equipconfig, diveconfig, dive, transect dialogs
-    lookups_page.py  read-only people/instruments + status line
+    main_window.py   sidebar + stacked pages, toolbar, settings dialog
+    cruises.py       the Cruises page: create, open, select, edit, move, remove
+    pages.py         generic Add/Edit/Delete page, read-only lookup pages, Checks
+    forms.py         cruise, equipconfig, diveconfig, dive, transect dialogs
+    widgets.py       form building blocks
     charts.py        bar and timeline charts, drawn with QPainter
-  settings.py   home folder, settings.json (API URL, proxy, data folder)
-  store.py      the open log and lookups, single-copy lock
+  settings.py   home folder, settings.json (API URL, proxy, default log folder, cruise list)
+  store.py      the session: current cruise's log, lookups, cruise list operations, single-copy lock
   app.py        start-up (python -m divelog)
-tests/          unit tests + equivalence tests against the Shiny app
+tests/          unit tests + compatibility tests against the Shiny version's output
 ```
 
 ## 3. Feature mapping
@@ -89,10 +91,10 @@ tests/          unit tests + equivalence tests against the Shiny app
 
 Port existing quirks deliberately rather than by accident. For example, editing an equipment config rebuilds the variable list by stripping the braces and commas and splitting on spaces. Decide whether to keep or fix each one, and note the decision in the code.
 
-**Deferred:** how ship and ROV *platforms* fit into equipment and dive configurations. The API keeps them under `/rov/platforms/`, separate from `/rov/instruments/`. Version 1 keeps the current structure: every equipment config, platform or instrument, references an instrument ID.
+**Platforms** (originally deferred, now done; see [Cruise sessions](#cruise-sessions)): ships and subs come from `/rov/platforms/`. The ship is a property of the cruise, and platform configurations reference a sub.
 
 ## 4. Windows specifics
-- **Data folder:** the program may be installed somewhere read-only, so don't store data next to it. Default to `%LOCALAPPDATA%\DiveLogging\data\` and let the user choose another folder in settings. Add **Open data folder** and **New survey**, which moves the current log aside (today a manual step).
+- **Data:** the program may be installed somewhere read-only, so don't store data next to it. Settings and the lookups are in `%LOCALAPPDATA%\DiveLogging\`; cruise logs default to `%LOCALAPPDATA%\DiveLogging\logs\`, which can be changed in settings, and each log can be moved. Add **Open log folder**.
 - **Settings:** stored in `%LOCALAPPDATA%\DiveLogging\settings.json`, not environment variables or the registry, so everything the app keeps is in one folder. API URL default: `https://msea.science/api/v2`. Optional proxy setting (see [Network access](#6-network-access-to-msea-science)).
 - **Single writer:** only one copy of the app may run at a time (`QLockFile` in the data folder), so two windows can't write to the same log.
 
@@ -213,8 +215,17 @@ About 2–3 weeks of development before the field trial, not counting IT approva
 Where the implementation differs from the plan above, and why:
 - **No Qt Charts.** The charts are drawn with `QPainter` (`divelog/ui/charts.py`). Qt Charts lives in PySide6-Addons, about twice the download of PySide6-Essentials, for four simple charts.
 - **Settings in a JSON file** (`settings.json` in the home folder) instead of `QSettings`. That keeps everything in one folder, which is easy to inspect, back up and test (`DIVELOG_HOME` moves it all).
-- **Data in `home\data\`**, next to `settings.json` and `venv\`.
+- **Cruise sessions** replaced the single log in `home\data\` and **New survey** (see below).
 - **Small behaviour changes,** listed in the README: duplicate names and invalid times are blocked, transects can be added while editing a dive, and Checks has two more warnings.
 - **Garbage collection and threads.** The lookups download runs in a background thread. Python's garbage collector can run in any thread, and if it frees Qt widgets outside the GUI thread, their timers later fire at freed memory and crash the app (found by the tests). The app collects on the GUI thread and pauses collection while the download runs; dialogs are deleted on the GUI thread after use.
 - **Tested on Windows** (Python 3.12, through WSL): first start online, a second start (no setup, about 2 s), Python not found (asks for the path and rejects the Microsoft Store stand-in), a failed update (keeps the old environment), the offline zip (installs from bundled wheels), and a lookups update from the real msea-rov-db API.
 - **Not done yet:** a CI job for the tests and the zip, code signing, and updating `extract_log.py` for the ID-based log.
+
+## Cruise sessions
+Added after the first version, at the user's request: a cruise is loaded into a session, and everything entered applies to it.
+- **One log per cruise.** The Cruises page creates a cruise (its log is created in the default log folder, `home\logs\` unless changed in settings), adds an existing log, selects the current cruise, edits a cruise, or removes it from the list (keeping the file).
+- **The cruise list is in `settings.json`,** with each log's location, alongside the other settings. A cruise's properties (name, leg, start and end dates, ship, objective, summary, note) are in its log's `cruise` table, so the log describes itself and exports include them; the list keeps a copy of the name and leg so a missing log can still be shown.
+- **Moving a log.** Editing a cruise can change its log's location. The user confirms the move; if they decline or it fails (e.g. the target exists or the drive is gone), the location is unchanged. A log moved outside the app can be located from the list.
+- **No cruise or leg fields** on dives and transects. They still record `cruise_name` and `leg` (filled in from the cruise, and renamed with it), so exports and the importer keep working.
+- **The ship belongs to the cruise** (as in the API's `Cruise.ship`), chosen from the platforms whose equipment type is "Ship". Dive configurations no longer choose a ship; platform configurations choose a sub (any other platform).
+- **Last used.** New dives preselect the last dive configuration used, and new transects the last dive used (also when added from the Transects page). Both are remembered per cruise in the settings.

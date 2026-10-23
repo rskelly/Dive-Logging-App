@@ -3,21 +3,24 @@
 Everything lives in one folder (the "home"): %LOCALAPPDATA%\\DiveLogging on
 Windows, ~/.local/share/DiveLogging elsewhere, or DIVELOG_HOME if set.
 
-  home/settings.json   API URL, proxy, data folder
-  home/data/           log db, lookups db, Exports (unless moved in settings)
-  home/venv/           Python libraries, managed by run.py
+  home/settings.json    API URL, proxy, default log folder, the list of cruises
+  home/lookups.sqlite   people, instruments and platforms from the API
+  home/logs/            cruise logs, unless the default folder is changed or a
+                        cruise's log is moved
+  home/venv/            Python libraries, managed by run.py
 """
 
 import json
 import os
 import sys
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 DEFAULT_API_URL = 'https://msea.science/api/v2'
-LOG_DB = 'divelogging-db.sqlite'
 LOOKUPS_DB = 'lookups.sqlite'
 EXPORTS = 'Exports'
+# Fields of each entry in Settings.cruises
+CRUISE_FIELDS = ('id', 'name', 'leg', 'log', 'last_dive', 'last_dive_config')
 
 
 def home_dir():
@@ -33,12 +36,25 @@ class Settings:
     api_url: str = DEFAULT_API_URL
     # Empty: use the system's proxy settings
     proxy: str = ''
-    # Empty: home/data
-    data_dir: str = ''
+    # Where new cruise logs are created. Empty: home/logs
+    logs_dir: str = ''
+    # One entry per cruise: id (the cruise's row_id in its log), name and leg (for
+    # the list, kept in step with the log), log (the log file's path), and the
+    # last dive and dive config used, which new transects and dives default to
+    cruises: list = field(default_factory=list)
+    # id of the cruise open when the app was last closed
+    current: str = ''
 
     @property
-    def data_path(self):
-        return Path(self.data_dir) if self.data_dir else home_dir() / 'data'
+    def logs_path(self):
+        return Path(self.logs_dir) if self.logs_dir else home_dir() / 'logs'
+
+    @property
+    def lookups_path(self):
+        return home_dir() / LOOKUPS_DB
+
+    def cruise(self, cruise_id):
+        return next((c for c in self.cruises if c['id'] == cruise_id), None)
 
     @classmethod
     def load(cls):
@@ -46,9 +62,17 @@ class Settings:
             saved = json.loads((home_dir() / 'settings.json').read_text(encoding='utf-8'))
         except (OSError, ValueError):
             saved = {}
-        names = {f.name for f in fields(cls)}
-        return cls(**{k: v for k, v in saved.items() if k in names and isinstance(v, str)})
+        settings = cls(**{k: v for k, v in saved.items()
+                          if k in ('api_url', 'proxy', 'logs_dir', 'current') and isinstance(v, str)})
+        for c in saved.get('cruises', []) if isinstance(saved.get('cruises'), list) else []:
+            if isinstance(c, dict) and c.get('id') and c.get('log'):
+                settings.cruises.append({k: str(c.get(k) or '') for k in CRUISE_FIELDS})
+        return settings
 
     def save(self):
         home_dir().mkdir(parents=True, exist_ok=True)
-        (home_dir() / 'settings.json').write_text(json.dumps(asdict(self), indent=2), encoding='utf-8')
+        path = home_dir() / 'settings.json'
+        # Write a new file, then replace, so a crash can't leave half a file
+        tmp = path.with_suffix('.tmp')
+        tmp.write_text(json.dumps(asdict(self), indent=2), encoding='utf-8')
+        tmp.replace(path)
