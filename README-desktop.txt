@@ -38,8 +38,20 @@ before moving it. "Open log folder" opens the current cruise's folder; exports a
 saved there, in Exports. "Open log file" on the Cruises page adds a log made on
 another computer. Updating the app doesn't touch your logs.
 
+Tips
+----
+- Times are in UTC. Click "Now", or pick a date from the field's drop-down.
+- In a dive configuration, the "+" next to the sub and the instrument lists adds an
+  equipment configuration without leaving the form.
+- The variables an equipment configuration can set (pan, tilt, offsets, ...) are
+  edited in Settings > Configuration Properties, or with the "+" next to the
+  variable list in the equipment configuration form.
+
 Settings
 --------
+Settings > Settings...
 - MSEA API URL: where the lookups come from (default https://msea.science/api/v2).
 - Proxy: leave empty to use Windows' settings.
 - Default log folder: where new cruises' logs are created.
+Settings > Configuration Properties...
+- The variables equipment configurations can set, with units and descriptions.

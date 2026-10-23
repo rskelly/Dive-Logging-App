@@ -2,14 +2,14 @@
 
 import json
 import shutil
-from pathlib import Path
 
 import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QFileDialog, QMessageBox
 
-from divelog.formats import parse_time
+from divelog.db import LogDB
+from divelog.formats import now_utc, parse_time
 from divelog.lookups import update_lookups
 from divelog.settings import Settings, home_dir
 from divelog.store import AlreadyOpenError, Store
@@ -19,7 +19,6 @@ from divelog.ui.forms import CruiseForm, DiveconfigForm, DiveForm, EquipconfigFo
 from divelog.ui.main_window import MainWindow
 from divelog.ui.pages import ChecksPage, TablePage, warnings_html
 
-SHINY_LOG = Path(__file__).parent / 'fixtures' / 'shiny' / 'divelogging-db.sqlite'
 CRUISE = {'name': 'C1', 'leg': '1', 'start_date': '2026-10-01', 'end_date': '2026-10-20', 'ship_id': 201,
           'objective': 'Survey', 'summary': '', 'note': ''}
 
@@ -177,15 +176,14 @@ def test_a_missing_log_can_be_located(store, cruise, monkeypatch, tmp_path):
 
 
 def test_opening_a_log_from_elsewhere(store, tmp_path, monkeypatch):
-    copy = tmp_path / 'shiny.sqlite'
-    shutil.copy(SHINY_LOG, copy)
-    monkeypatch.setattr(QFileDialog, 'getOpenFileName', lambda *a, **k: (str(copy), ''))
+    elsewhere = tmp_path / 'other-laptop' / 'C9.sqlite'
+    LogDB.create(elsewhere, {**CRUISE, 'name': 'C9'}).close()
+    monkeypatch.setattr(QFileDialog, 'getOpenFileName', lambda *a, **k: (str(elsewhere), ''))
     page = CruisesPage(store)
     page.open_log()
     page.open_log()  # not added twice
     assert len(store.settings.cruises) == 1
-    assert store.cruise['name'] == 'C1' and store.log.path == copy
-    assert 'start_date' in store.cruise  # upgraded
+    assert store.cruise['name'] == 'C9' and store.log.path == elsewhere
 
 
 def test_removing_a_cruise_keeps_its_log(store, cruise, monkeypatch):
@@ -222,17 +220,118 @@ def test_equipconfig_form_chooses_instruments_or_subs(store, cruise):
     assert old.equipment.currentText() == 'Unknown instrument (ID 999)' and old.values()['instrument_id'] == 999
 
 
-def test_diveconfig_form_has_no_ship(store, cruise):
+def test_diveconfig_form_needs_only_a_name_and_sub(store, cruise):
     _fill_setup(store)
     form = DiveconfigForm(store)
-    assert not hasattr(form, 'ship')
     form.name.setText('dc3')
-    form.sub.set_value('phantom')
-    form.ship_instruments.set_value(['cam'])
     assert not form.submit.isEnabled()
-    form.sub_instruments.set_value(['cam'])
-    assert form.submit.isEnabled()
-    assert form.values()['ship_config'] == '' and form.values()['sub_config'] == 'phantom'
+    form.sub.set_value('phantom')
+    assert form.submit.isEnabled()  # instruments are optional
+    assert form.values() == {'name': 'dc3', 'sub_config': 'phantom', 'ship_instrument_configs': '',
+                             'sub_instrument_configs': '', 'note': ''}
+
+
+def test_diveconfig_plus_buttons_add_equipment_configs(store, cruise, monkeypatch):
+    _fill_setup(store)
+    form = DiveconfigForm(store)
+    added = []
+
+    def fill(self):
+        added.append(self.type.value())
+        assert not self.type.isEnabled()  # the type matches the field
+        self.name.setText({'platform': 'delta', 'instrument': 'dvl'}[self.type.value()])
+        self.equipment.set_value(203 if self.type.value() == 'platform' else 102)
+        return True
+    monkeypatch.setattr(EquipconfigForm, 'exec', fill)
+    plus = {label: btn for label, btn in _plus_buttons(form)}
+    plus['Sub'].click()
+    assert form.sub.value() == 'delta'
+    plus['Sub instruments'].click()
+    assert form.sub_instruments.value() == ['dvl']
+    assert 'dvl' not in form.ship_instruments.value()  # offered, not chosen
+    form.ship_instruments.set_value(['cam', 'dvl'])
+    assert added == ['platform', 'instrument']
+    assert [c['name'] for c in store.log.rows('equipconfig')] == ['phantom', 'cam', 'delta', 'dvl']
+    assert store.log.rows('equipconfig')[2]['platform_id'] == 203
+
+
+def _plus_buttons(form):
+    """(row label, '+' button) for each '+' in a form."""
+    from PySide6.QtWidgets import QFormLayout, QToolButton
+    layout = form.form
+    for r in range(layout.rowCount()):
+        label = layout.itemAt(r, QFormLayout.ItemRole.LabelRole)
+        field = layout.itemAt(r, QFormLayout.ItemRole.FieldRole)
+        if label and field and field.widget():
+            for button in field.widget().findChildren(QToolButton):
+                if button.text() == '+':
+                    yield label.widget().text().split(' <')[0], button
+
+
+def test_time_field(qapp):
+    from divelog.ui.widgets import TimeField
+    field = TimeField()
+    assert field.button.text() == 'Now'
+    assert field.value() == '' and not field.is_valid() and field.edit.text() == 'Not set'
+    field.set_value('2026-10-23T19:46:23Z')
+    assert field.value() == '2026-10-23T19:46:23Z' and field.edit.text() == '2026-10-23 19:46:23 UTC'
+    assert field.edit.calendarPopup()
+    field.button.click()
+    assert abs((parse_time(field.value()) - parse_time(now_utc())).total_seconds()) < 5
+    field.set_value('')
+    assert field.value() == ''
+
+
+def test_configuration_properties_editor(store, cruise):
+    from divelog.ui.properties import PropertiesEditor
+    assert [p['variable'] for p in store.settings.config_properties][:2] == ['pan', 'tilt']  # from the CSV
+    editor = PropertiesEditor(store)
+    warnings = []
+    QMessageBox.warning, original = (lambda *a, **k: warnings.append(a[2])), QMessageBox.warning
+    try:
+        editor.add()
+        editor.table.item(editor.table.rowCount() - 1, 0).setText('pan')  # already there
+        editor.accept()
+        assert 'unique' in warnings[-1] and editor.result() == 0
+        editor.table.item(editor.table.rowCount() - 1, 0).setText("ro'll")
+        editor.accept()
+        assert "can't contain" in warnings[-1]
+        editor.table.item(editor.table.rowCount() - 1, 0).setText('roll')
+        editor.table.item(editor.table.rowCount() - 1, 1).setText('degree')
+        editor.add()
+        editor.table.item(editor.table.rowCount() - 1, 0).setText('heave')
+        editor.table.setCurrentCell(editor.table.rowCount() - 1, 0)
+        editor.remove()  # the last one added is gone again
+        editor.accept()
+    finally:
+        QMessageBox.warning = original
+    assert editor.saved_last_added == 'roll'
+    assert Settings.load().config_properties[-1] == {'variable': 'roll', 'unit': 'degree', 'description': ''}
+
+
+def test_equipconfig_plus_edits_properties_and_selects_the_new_one(store, cruise, monkeypatch):
+    from divelog.ui import properties
+    form = EquipconfigForm(store)
+    form.variable.set_value('tilt')
+
+    def add_roll(store_, parent=None):
+        store_.set_config_properties(store_.settings.config_properties + [{'variable': 'roll', 'unit': 'degree',
+                                                                           'description': ''}])
+        return 'roll'
+    monkeypatch.setattr(properties, 'edit_properties', add_roll)
+    dict(_plus_buttons(form))['Variable'].click()
+    assert form.variable.value() == 'roll' and form.variable.currentText() == 'roll (degree)'
+    # Nothing added: the selection stays
+    monkeypatch.setattr(properties, 'edit_properties', lambda *a, **k: None)
+    form.variable.set_value('pan')
+    dict(_plus_buttons(form))['Variable'].click()
+    assert form.variable.value() == 'pan'
+
+
+def test_settings_menu_has_configuration_properties(store):
+    window = MainWindow(store, store.settings)
+    assert [a.text() for a in window.settings_menu.actions()] == ['Settings...', 'Configuration Properties...']
+    window.close()
 
 
 def test_dive_form_records_the_current_cruise(store, cruise, monkeypatch):
@@ -362,8 +461,8 @@ def test_checks_page(store, cruise, tmp_path):
     _fill_setup(store)
     store.log.insert('dives', {'name': 'D1', 'pilot': '7;9', 'start_time': '2026-10-23T10:00:00Z',
                                'end_time': '2026-10-23T11:30:00Z'})
-    store.log.insert('dives', {'name': 'D2', 'pilot': '7', 'start_time': '2026-10-23T-13:00:00Z',  # Shiny format
-                               'end_time': '2026-10-23T-13:45:00Z'})
+    store.log.insert('dives', {'name': 'D2', 'pilot': '7', 'start_time': '2026-10-23T13:00:00Z',
+                               'end_time': '2026-10-23T13:45:00Z'})
     store.log.insert('transects', {'dive_name': 'D1', 'name': 'D1_1', 'start_time': '2026-10-23T10:10:00Z',
                                    'end_time': '2026-10-23T10:40:00Z'})
     store.log.insert('transects', {'dive_name': 'D9', 'name': 'D9_1', 'start_time': 'bad', 'end_time': ''})

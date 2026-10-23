@@ -6,9 +6,9 @@ import threading
 from PySide6.QtCore import QObject, Qt, QUrl, Signal
 from PySide6.QtGui import QAction, QDesktopServices
 from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QHBoxLayout,
-                               QLabel, QLineEdit, QListWidget, QMainWindow, QMessageBox,
-                               QProgressDialog, QPushButton, QSplitter, QStackedWidget, QVBoxLayout,
-                               QWidget)
+                               QLabel, QLineEdit, QListWidget, QMainWindow, QMenu, QMessageBox,
+                               QProgressDialog, QPushButton, QSplitter, QStackedWidget, QToolButton,
+                               QVBoxLayout, QWidget)
 
 from .. import __version__
 from ..export import export_all
@@ -17,6 +17,7 @@ from ..settings import DEFAULT_API_URL, Settings
 from .cruises import CruisesPage
 from .forms import DiveconfigForm, DiveForm, EquipconfigForm, TransectForm
 from .pages import ChecksPage, LookupPage, TablePage, pilot_names
+from .properties import edit_properties
 
 # Pages that show the current cruise's log, disabled while none is open
 LOG_PAGES = {'Equipment configurations', 'Dive configurations', 'Dives', 'Transects', 'Checks'}
@@ -54,7 +55,15 @@ class MainWindow(QMainWindow):
         self.export_action = self._action(toolbar, 'Export', self.export, "Export the cruise's tables as CSV")
         toolbar.addSeparator()
         self._action(toolbar, 'Open log folder', self.open_log_folder)
-        self._action(toolbar, 'Settings...', self.edit_settings)
+        menu = QMenu(self)
+        menu.addAction('Settings...', self.edit_settings)
+        menu.addAction('Configuration Properties...', lambda: edit_properties(self.store, self))
+        settings_button = QToolButton()
+        settings_button.setText('Settings')
+        settings_button.setMenu(menu)
+        settings_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        toolbar.addWidget(settings_button)
+        self.settings_menu = menu
 
         self.status = QLabel()
         self.statusBar().addWidget(self.status, 1)

@@ -1,6 +1,6 @@
 # Plan: Dive Logging App as a Windows desktop application
 
-Status: implemented in `divelog/`, `run.py` and `DiveLogging.bat` (see the README). The Shiny app has been removed from the repository; its output for a scripted session is kept in `tests/fixtures/shiny/` as a fixed reference. Where the implementation differs from the original plan, this document has been updated to match, and the differences are listed under [Implementation notes](#implementation-notes).
+Status: implemented in `divelog/`, `run.py` and `DiveLogging.bat` (see the README). The Shiny app has been removed, and compatibility with it is no longer required (see [Later changes](#later-changes)); sections 1 and 3 describe the original plan. Where the implementation differs from the original plan, this document has been updated to match, and the differences are listed under [Implementation notes](#implementation-notes).
 
 ## Goal
 Replace the Shiny app (and its Docker container) with a native Windows program that does the same things and writes the same data: the same SQLite log, the same lookups, and the same CSV exports. It doesn't need R, Docker or a browser.
@@ -229,3 +229,9 @@ Added after the first version, at the user's request: a cruise is loaded into a 
 - **No cruise or leg fields** on dives and transects. They still record `cruise_name` and `leg` (filled in from the cruise, and renamed with it), so exports and the importer keep working.
 - **The ship belongs to the cruise** (as in the API's `Cruise.ship`), chosen from the platforms whose equipment type is "Ship". Dive configurations no longer choose a ship; platform configurations choose a sub (any other platform).
 - **Last used.** New dives preselect the last dive configuration used, and new transects the last dive used (also when added from the Transects page). Both are remembered per cruise in the settings.
+
+## Later changes
+- **No Shiny compatibility.** The Shiny app is gone and its logs don't need to open, so the parts of the output contract that kept its format are dropped: the legacy `T-` times aren't read, the old-log guard and `diveconfig.ship_config` are gone, and the Shiny reference fixtures and comparison tests are removed. `extract_log.py` in msea-rov-db will be adapted to the new model.
+- **Dive configurations** need only a name and a sub; ship and sub instruments are optional. A "+" beside each field opens the equipment configuration form, preset to a platform or an instrument, and chooses the new configuration.
+- **Times** use a date-time picker (calendar drop-down, UTC) with a **Now** button.
+- **Configuration properties** (the variables an equipment configuration can set, with units and descriptions) are kept in `settings.json`, seeded from `config-variables.csv`, and edited from **Settings > Configuration Properties** or a "+" beside the variable drop-down, which then selects the property just added.

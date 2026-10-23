@@ -6,13 +6,13 @@ from pathlib import Path
 
 from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QLabel, QMessageBox, QPushButton, QVBoxLayout, QWidget
 
-from ..db import LogExistsError, OldLogError
+from ..db import LogExistsError
 from ..lookups import platform_label
 from .forms import CruiseForm
 from .pages import _fill, _table, _title
 
 # Errors that opening, creating or moving a log can raise
-LOG_ERRORS = (OSError, sqlite3.Error, OldLogError, LogExistsError)
+LOG_ERRORS = (OSError, sqlite3.Error, LogExistsError)
 
 
 class CruisesPage(QWidget):
@@ -87,7 +87,7 @@ class CruisesPage(QWidget):
             form.deleteLater()
 
     def open_log(self):
-        """Add a log made elsewhere (another computer, the Shiny version) to the list, and select it."""
+        """Add a log made elsewhere (e.g. on another computer) to the list, and select it."""
         path, _ = QFileDialog.getOpenFileName(self, 'Open log file', str(self.store.settings.logs_path),
                                               'Cruise logs (*.sqlite);;All files (*)')
         if not path:

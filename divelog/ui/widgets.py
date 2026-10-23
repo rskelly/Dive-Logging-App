@@ -1,11 +1,11 @@
 """Building blocks for the entry forms."""
 
-from PySide6.QtCore import QDate, Qt, Signal
-from PySide6.QtWidgets import (QComboBox, QDateEdit, QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout,
+from PySide6.QtCore import QDate, QDateTime, Qt, QTime, QTimeZone, Signal
+from PySide6.QtWidgets import (QComboBox, QDateEdit, QDateTimeEdit, QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout,
                                QLabel, QLineEdit, QListWidget, QListWidgetItem, QPushButton,
                                QVBoxLayout, QWidget)
 
-from ..formats import now_utc, parse_time
+from ..formats import parse_time
 
 REQUIRED = ' <span style="color:#c0392b">*</span>'
 
@@ -147,6 +147,11 @@ class MultiChoiceField(QListWidget):
     def _items(self):
         return [self.item(i) for i in range(self.count())]
 
+    def add_choice(self, label, data):
+        """Add an unchecked choice, unless it's already there."""
+        if data not in [i.data(Qt.ItemDataRole.UserRole) for i in self._items()]:
+            self._add(label, data)
+
     def value(self):
         """The checked values, in list order."""
         return [i.data(Qt.ItemDataRole.UserRole) for i in self._items()
@@ -181,36 +186,65 @@ class DateField(QDateEdit):
         self.setDate(date if date.isValid() else QDate.currentDate())
 
 
+UTC = QTimeZone(QTimeZone.Initialization.UTC)
+# The log's time format, in Qt's notation (see formats.TIME_FORMAT)
+QT_TIME_FORMAT = "yyyy-MM-dd'T'HH:mm:ss'Z'"
+
+
+class _DateTimeEdit(QDateTimeEdit):
+    """A UTC date and time with a calendar. Its minimum stands for 'not set'."""
+    UNSET = QDateTime(QDate(2000, 1, 1), QTime(0, 0), UTC)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setTimeZone(UTC)
+        self.setDisplayFormat("yyyy-MM-dd HH:mm:ss 'UTC'")
+        self.setCalendarPopup(True)
+        self.setMinimumDateTime(self.UNSET)
+        self.setSpecialValueText('Not set')  # shown at the minimum
+        self.setDateTime(self.UNSET)
+
+    def is_set(self):
+        return self.dateTime() != self.UNSET
+
+    def mousePressEvent(self, event):
+        # Open the calendar at today, not at 'not set' (2000)
+        if not self.is_set():
+            self.setDateTime(QDateTime.currentDateTimeUtc().toTimeZone(UTC))
+        super().mousePressEvent(event)
+
+
 class TimeField(QWidget):
-    """A time (UTC) with a button that sets it to now."""
+    """A time (UTC), picked from a calendar or typed, with a button that sets it to now."""
     changed = Signal()
 
-    def __init__(self, button_label, value='', parent=None):
+    def __init__(self, button_label='Now', value='', parent=None):
         super().__init__(parent)
-        self.edit = TextField(value)
-        self.edit.setPlaceholderText('YYYY-MM-DDThh:mm:ssZ')
-        self.edit.changed.connect(self._changed)
+        self.edit = _DateTimeEdit()
+        self.set_value(value)
+        self.edit.dateTimeChanged.connect(self.changed)
         self.button = QPushButton(button_label)
-        self.button.clicked.connect(lambda: self.edit.setText(now_utc()))
+        self.button.clicked.connect(self.set_now)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.edit, 1)
         layout.addWidget(self.button)
-        self._changed()
 
-    def _changed(self):
-        bad = bool(self.edit.value()) and not self.is_valid()
-        self.edit.setStyleSheet('color: #c0392b' if bad else '')
-        self.changed.emit()
+    def set_now(self):
+        now = QDateTime.currentDateTimeUtc().toTimeZone(UTC)
+        self.edit.setDateTime(now.addMSecs(-now.time().msec()))
 
     def is_valid(self):
-        return parse_time(self.edit.value()) is not None
+        return self.edit.is_set()
 
     def value(self):
-        return self.edit.value()
+        """The time in the log's format, or '' if not set."""
+        return self.edit.dateTime().toString(QT_TIME_FORMAT) if self.edit.is_set() else ''
 
     def set_value(self, value):
-        self.edit.set_value(value)
+        """Set from the log's format; anything else (e.g. '') means not set."""
+        when = parse_time(value)
+        self.edit.setDateTime(QDateTime.fromSecsSinceEpoch(int(when.timestamp()), UTC) if when else _DateTimeEdit.UNSET)
 
 
 def unique(values):

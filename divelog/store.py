@@ -1,6 +1,5 @@
 """The session: the current cruise's log, the lookups and the list of cruises."""
 
-import csv
 import re
 import shutil
 import uuid
@@ -8,7 +7,6 @@ from pathlib import Path
 
 from PySide6.QtCore import QLockFile, QObject, Signal
 
-from . import APP_ROOT
 from .db import LogDB, LogExistsError, read_cruise
 from .lookups import Lookups
 from .settings import EXPORTS, home_dir
@@ -16,12 +14,6 @@ from .settings import EXPORTS, home_dir
 
 class AlreadyOpenError(Exception):
     """Another copy of the app is running."""
-
-
-def read_config_variables():
-    """Equipment configuration variables (edit config-variables.csv as needed)."""
-    with open(APP_ROOT / 'config-variables.csv', newline='', encoding='utf-8') as f:
-        return [r['variable'] for r in csv.DictReader(f) if r.get('variable')]
 
 
 def safe_name(text):
@@ -36,7 +28,6 @@ class Store(QObject):
     def __init__(self, settings):
         super().__init__()
         self.settings = settings
-        self.config_variables = read_config_variables()
         home_dir().mkdir(parents=True, exist_ok=True)
         self._lock = QLockFile(str(home_dir() / '.divelog.lock'))
         # Never time out: a lock is only stale if the process that took it has gone
@@ -55,6 +46,11 @@ class Store(QObject):
     def notify(self):
         self.changed.emit()
 
+    def set_config_properties(self, properties):
+        """Replace the configuration properties and save them."""
+        self.settings.config_properties = properties
+        self.settings.save()
+
     # The current cruise
 
     @property
@@ -72,8 +68,7 @@ class Store(QObject):
         return Path(self.log.path).parent / EXPORTS
 
     def open_cruise(self, cruise_id):
-        """Make a cruise current. Raises FileNotFoundError if its log is missing,
-        or OldLogError (from db) for an old log."""
+        """Make a cruise current. Raises FileNotFoundError if its log is missing."""
         entry = self.settings.cruise(cruise_id)
         path = Path(entry['log'])
         if not path.is_file():
@@ -116,13 +111,13 @@ class Store(QObject):
         return cruise_id
 
     def add_log(self, path):
-        """Add an existing log (e.g. from another computer or the Shiny version) to
+        """Add an existing log (e.g. from another computer) to
         the list. Returns its id; a log already in the list isn't added twice."""
         path = Path(path)
         for c in self.settings.cruises:
             if Path(c['log']).resolve() == path.resolve():
                 return c['id']
-        log = LogDB(path)  # adds any missing columns; OldLogError for an old log
+        log = LogDB(path)  # adds any missing columns
         try:
             if log.cruise() is None:
                 log.set_cruise({'name': path.stem, 'leg': '1'})

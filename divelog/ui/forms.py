@@ -6,7 +6,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QLocale, Qt
 from PySide6.QtGui import QDoubleValidator
-from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QLabel, QPushButton, QWidget
+from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QLabel, QPushButton, QToolButton, QWidget
 
 from ..formats import build_config, format_number, join_ids, parse_config, split_ids
 from ..lookups import instrument_label, person_label, platform_label
@@ -19,8 +19,17 @@ def _row(*widgets, stretch_first=True):
     layout = QHBoxLayout(box)
     layout.setContentsMargins(0, 0, 0, 0)
     for i, w in enumerate(widgets):
-        layout.addWidget(w, 1 if (i == 0 and stretch_first) else 0)
+        layout.addWidget(w, 1 if (i == 0 and stretch_first) else 0, Qt.AlignmentFlag.AlignTop)
     return box
+
+
+def _plus(tip, slot):
+    """A '+' button to the right of a field, which adds something to choose from."""
+    button = QToolButton()
+    button.setText('+')
+    button.setToolTip(tip)
+    button.clicked.connect(slot)
+    return button
 
 
 def _unique_name_check(form, field, existing, own=None):
@@ -108,15 +117,17 @@ class CruiseForm(EntryForm):
 
 
 class EquipconfigForm(EntryForm):
-    """An instrument or a platform (sub), and its configuration."""
+    """An instrument or a platform (sub), and its configuration. kind presets and
+    fixes the type, when the form is opened to add one or the other."""
     EDITABLE = ['instrument_id', 'platform_id', 'type', 'configuration', 'note']
 
-    def __init__(self, store, row=None, parent=None):
+    def __init__(self, store, row=None, kind=None, parent=None):
         super().__init__('Equipment configuration', parent)
         self.store = store
         row = row or {}
         self.type = self.add_row('Type', ChoiceField(same_choices(['instrument', 'platform']),
-                                                     row.get('type') or 'instrument'), True)
+                                                     row.get('type') or kind or 'instrument'), True)
+        self.type.setEnabled(kind is None)
         self.equipment = ChoiceField()
         self.equipment_label = QLabel()
         self.equipment_label.setTextFormat(Qt.TextFormat.RichText)
@@ -136,7 +147,8 @@ class EquipconfigForm(EntryForm):
             _unique_name_check(self, self.name, [r['name'] for r in store.log.rows('equipconfig')])
 
         # Variables are added to the configuration string one at a time
-        self.variable = ChoiceField(same_choices(store.config_variables))
+        self.variable = ChoiceField()
+        self._set_variable_choices()
         self.value = TextField()
         self.value.setPlaceholderText('Value')
         validator = QDoubleValidator(self.value)
@@ -144,7 +156,8 @@ class EquipconfigForm(EntryForm):
         self.value.setValidator(validator)
         self.add = QPushButton('Add')
         self.add.clicked.connect(self._add_variable)
-        self.add_row('Variable', _row(self.variable, self.value, self.add, stretch_first=False))
+        self.add_row('Variable', _row(self.variable, _plus('Edit the configuration properties', self._edit_properties),
+                                      self.value, self.add, stretch_first=False))
         self.variable.changed.connect(self._update_add)
         self.value.changed.connect(self._update_add)
         self._update_add()
@@ -162,6 +175,19 @@ class EquipconfigForm(EntryForm):
             choices = [(instrument_label(i), i['id']) for i in self.store.lookups.instruments()]
         self.equipment.set_choices(choices)
         self.equipment.changed.emit()
+
+    def _set_variable_choices(self, value=None):
+        self.variable.set_choices([(f"{p['variable']} ({p['unit']})" if p['unit'] else p['variable'], p['variable'])
+                                   for p in self.store.settings.config_properties], value)
+
+    def _edit_properties(self):
+        from .properties import edit_properties
+        current = self.variable.value()
+        added = edit_properties(self.store, self)
+        names = {p['variable'] for p in self.store.settings.config_properties}
+        # Select the property just added; otherwise keep the selection, if it still exists
+        self._set_variable_choices(added or (current if current in names else None))
+        self._update_add()
 
     def _update_add(self):
         self.add.setEnabled(self.variable.value() is not None and self.value.hasAcceptableInput())
@@ -181,32 +207,60 @@ class EquipconfigForm(EntryForm):
 
 
 class DiveconfigForm(EntryForm):
-    """The sub and the instruments on the ship and the sub. The ship is the cruise's."""
+    """The sub, and the instruments on the ship and the sub (optional). The ship is
+    the cruise's. Each list has a '+' to add an equipment configuration to it."""
     EDITABLE = ['sub_config', 'ship_instrument_configs', 'sub_instrument_configs', 'note']
 
     def __init__(self, store, row=None, parent=None):
         super().__init__('Dive configuration', parent)
+        self.store = store
         row = row or {}
         configs = store.log.rows('equipconfig')
         platforms = same_choices(c['name'] for c in configs if c['type'] == 'platform')
         instruments = same_choices([c['name'] for c in configs if c['type'] == 'instrument'])
 
         self.name = self.add_row('Name', TextField(row.get('name')), True)
-        self.sub = self.add_row('Sub', ChoiceField(platforms, row.get('sub_config')), True)
-        self.ship_instruments = self.add_row('Ship instruments', MultiChoiceField(instruments), True)
+        self.sub = ChoiceField(platforms, row.get('sub_config'))
+        self.add_row('Sub', _row(self.sub, _plus('Add a platform configuration',
+                                                 lambda: self._add_config('platform', self.sub))), True)
+        self.ship_instruments = MultiChoiceField(instruments)
         self.ship_instruments.set_value(split_ids(row.get('ship_instrument_configs')))
-        self.sub_instruments = self.add_row('Sub instruments', MultiChoiceField(instruments), True)
+        self.add_row('Ship instruments', _row(self.ship_instruments, _plus(
+            'Add an instrument configuration', lambda: self._add_config('instrument', self.ship_instruments))))
+        self.sub_instruments = MultiChoiceField(instruments)
         self.sub_instruments.set_value(split_ids(row.get('sub_instrument_configs')))
+        self.add_row('Sub instruments', _row(self.sub_instruments, _plus(
+            'Add an instrument configuration', lambda: self._add_config('instrument', self.sub_instruments))))
         self.note = self.add_row('Note', TextField(row.get('note')))
-        for field in (self.name, self.sub, self.ship_instruments, self.sub_instruments):
+        for field in (self.name, self.sub):
             self.require(field)
         if row:
             self.name.setReadOnly(True)
         else:
             _unique_name_check(self, self.name, [r['name'] for r in store.log.rows('diveconfig')])
 
+    def _add_config(self, kind, field):
+        """Add an equipment configuration, and choose it in field."""
+        form = EquipconfigForm(self.store, kind=kind, parent=self)
+        try:
+            if not form.exec():
+                return
+            values = form.values()
+            self.store.log.insert('equipconfig', values)
+            self.store.notify()
+        finally:
+            form.deleteLater()
+        name = values['name']
+        if kind == 'platform':
+            self.sub.set_value(name)
+        else:
+            # A new instrument config can go on the ship or the sub: offer it in both
+            for lst in (self.ship_instruments, self.sub_instruments):
+                lst.add_choice(name, name)
+            field.set_value(field.value() + [name])
+
     def values(self):
-        return {'name': self.name.value(), 'ship_config': '', 'sub_config': self.sub.value(),
+        return {'name': self.name.value(), 'sub_config': self.sub.value(),
                 'ship_instrument_configs': join_ids(self.ship_instruments.value()),
                 'sub_instrument_configs': join_ids(self.sub_instruments.value()),
                 'note': self.note.value()}
@@ -238,7 +292,7 @@ class DiveForm(EntryForm):
         self.pilot = self.add_row('Pilot', MultiChoiceField(
             [(person_label(p), str(p['id'])) for p in store.lookups.people()]), True)
         self.pilot.set_value(split_ids(row.get('pilot')), lambda i: f'Unknown person (ID {i})')
-        self.start = self.add_row('Start time', TimeField('Start', row.get('start_time')), True)
+        self.start = self.add_row('Start time', TimeField('Now', row.get('start_time')), True)
 
         self.add_transect = QPushButton('Add transect')
         self.add_transect.clicked.connect(self._add_transect)
@@ -249,7 +303,7 @@ class DiveForm(EntryForm):
         self.name.changed.connect(self._show_transects)
         self._show_transects()
 
-        self.end = self.add_row('End time', TimeField('End', row.get('end_time')), True)
+        self.end = self.add_row('End time', TimeField('Now', row.get('end_time')), True)
         self.site_name = self.add_row('Site name', TextField(row.get('site_name')))
         self.objective = self.add_row('Objective', TextField(row.get('objective')))
         self.summary = self.add_row('Summary', TextField(row.get('summary')))
@@ -311,8 +365,8 @@ class TransectForm(EntryForm):
             # Keep the suggested name in step with the dive, until it's edited
             self._suggested = self.name.value()
             self.dive_name.changed.connect(self._follow_dive)
-        self.start = self.add_row('Start time', TimeField('Start', row.get('start_time')), True)
-        self.end = self.add_row('End time', TimeField('End', row.get('end_time')), True)
+        self.start = self.add_row('Start time', TimeField('Now', row.get('start_time')), True)
+        self.end = self.add_row('End time', TimeField('Now', row.get('end_time')), True)
         self.objective = self.add_row('Objective', TextField(row.get('objective')))
         self.summary = self.add_row('Summary', TextField(row.get('summary')))
         self.note = self.add_row('Note', TextField(row.get('note')))

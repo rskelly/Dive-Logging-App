@@ -1,7 +1,6 @@
 """Cruise logs: one SQLite file per cruise.
 
-The tables start with the columns the earlier R Shiny version of the app created,
-so its logs can still be opened; columns added since are at the end, and are
+Columns added to a table in a later version of the app go at the end, and are
 added to older logs when they're opened.
 """
 
@@ -14,7 +13,6 @@ import uuid
 # dives.pilot is a ';'-separated list of person IDs; the *_instrument_configs
 # columns are ';'-separated lists of equipment config names. An equipment config
 # is either an instrument (instrument_id) or a platform (platform_id).
-# diveconfig.ship_config is only set in logs from the Shiny version: the ship is now the cruise's.
 TABLES = {
     'cruise': ['row_id', 'name', 'leg', 'objective', 'summary', 'note', 'start_date', 'end_date', 'ship_id'],
     'dives': ['row_id', 'cruise_name', 'leg', 'name', 'pilot', 'start_time', 'end_time',
@@ -22,14 +20,9 @@ TABLES = {
     'transects': ['row_id', 'cruise_name', 'leg', 'dive_name', 'name', 'start_time', 'end_time',
                   'objective', 'summary', 'note'],
     'equipconfig': ['row_id', 'name', 'instrument_id', 'type', 'configuration', 'note', 'platform_id'],
-    'diveconfig': ['row_id', 'name', 'ship_config', 'sub_config', 'ship_instrument_configs',
-                   'sub_instrument_configs', 'note'],
+    'diveconfig': ['row_id', 'name', 'sub_config', 'ship_instrument_configs', 'sub_instrument_configs', 'note'],
 }
 INTEGER_COLUMNS = {('cruise', 'ship_id'), ('equipconfig', 'instrument_id'), ('equipconfig', 'platform_id')}
-
-
-class OldLogError(Exception):
-    """The log was written by a version of the app that used equipment short codes."""
 
 
 class LogExistsError(Exception):
@@ -41,14 +34,9 @@ def _type(table, column):
 
 
 def create_log_db(path):
-    """Create the log at path, or add any missing tables and columns.
-    Raises OldLogError for a log that references equipment by short code."""
+    """Create the log at path, or add any missing tables and columns."""
     con = sqlite3.connect(path)
     try:
-        cols = [r[1] for r in con.execute('PRAGMA table_info(equipconfig)')]
-        if cols and 'instrument_id' not in cols:
-            raise OldLogError(f'"{path}" was created by an older version of the app '
-                              '(equipment configurations use short codes).')
         with con:
             for table, columns in TABLES.items():
                 existing = [r[1] for r in con.execute(f'PRAGMA table_info("{table}")')]
@@ -132,8 +120,7 @@ class LogDB:
             self.con.execute(f'DELETE FROM "{table}" WHERE row_id = ?', [row_id])
 
     def cruise(self):
-        """The log's cruise, or None. (Logs from the Shiny version may have more
-        than one cruise row; the first is the log's cruise.)"""
+        """The log's cruise, or None."""
         rows = self.rows('cruise')
         return rows[0] if rows else None
 

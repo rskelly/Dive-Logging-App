@@ -5,8 +5,6 @@ from datetime import datetime, timezone
 
 # ISO 8601 UTC, e.g. 2026-10-23T19:46:23Z
 TIME_FORMAT = '%Y-%m-%dT%H:%M:%SZ'
-# Logs written by the earlier Shiny version of the app have a dash after the T: 2026-10-23T-19:46:23Z
-_LEGACY_TIME_FORMAT = '%Y-%m-%dT-%H:%M:%SZ'
 
 
 def now_utc():
@@ -15,15 +13,11 @@ def now_utc():
 
 
 def parse_time(text):
-    """Parse a logged time in either format. Returns an aware datetime, or None."""
-    if not text:
+    """Parse a logged time. Returns an aware datetime, or None."""
+    try:
+        return datetime.strptime((text or '').strip(), TIME_FORMAT).replace(tzinfo=timezone.utc)
+    except ValueError:
         return None
-    for fmt in (TIME_FORMAT, _LEGACY_TIME_FORMAT):
-        try:
-            return datetime.strptime(text.strip(), fmt).replace(tzinfo=timezone.utc)
-        except ValueError:
-            pass
-    return None
 
 
 def duration(start, end, unit_seconds=60):

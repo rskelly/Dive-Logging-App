@@ -6,7 +6,7 @@ from datetime import date, datetime, timezone
 
 import pytest
 
-from divelog.db import TABLES, LogDB, LogExistsError, OldLogError, create_log_db, read_cruise
+from divelog.db import TABLES, LogDB, LogExistsError, create_log_db, read_cruise
 from divelog.export import export_all
 from divelog.formats import (TIME_FORMAT, build_config, duration, format_number, join_ids, now_utc,
                              parse_config, parse_time, split_ids)
@@ -16,13 +16,11 @@ from divelog.lookups import (LookupsError, Lookups, create_lookups_db, describe_
 
 # Formats
 
-def test_times_are_iso_8601_and_legacy_times_still_read():
+def test_times_are_iso_8601():
     assert datetime.strptime(now_utc(), TIME_FORMAT)
-    expected = datetime(2026, 10, 23, 19, 46, 23, tzinfo=timezone.utc)
-    assert parse_time('2026-10-23T19:46:23Z') == expected
-    assert parse_time('2026-10-23T-19:46:23Z') == expected  # written by the Shiny app
-    assert parse_time('') is None and parse_time('23/10/2026') is None
-    assert duration('2026-10-23T10:00:00Z', '2026-10-23T-11:30:00Z') == 90
+    assert parse_time('2026-10-23T19:46:23Z') == datetime(2026, 10, 23, 19, 46, 23, tzinfo=timezone.utc)
+    assert parse_time('') is None and parse_time(None) is None and parse_time('23/10/2026') is None
+    assert duration('2026-10-23T10:00:00Z', '2026-10-23T11:30:00Z') == 90
 
 
 def test_config_strings():
@@ -71,7 +69,7 @@ def test_older_logs_get_the_new_columns(tmp_path):
 def test_renaming_the_cruise_renames_it_in_dives_and_transects(tmp_path):
     log = LogDB.create(tmp_path / 'log.sqlite', {'name': 'C1', 'leg': '1'})
     log.insert('dives', {'cruise_name': 'C1', 'leg': '1', 'name': 'D1'})
-    log.insert('dives', {'cruise_name': 'Other', 'leg': '2', 'name': 'D2'})  # e.g. a Shiny log with two legs
+    log.insert('dives', {'cruise_name': 'Other', 'leg': '2', 'name': 'D2'})  # not this cruise's: left alone
     log.insert('transects', {'cruise_name': 'C1', 'leg': '1', 'name': 'T1'})
     log.set_cruise({'name': 'C1b', 'leg': '1', 'start_date': '2026-10-01'})
     assert log.cruise()['name'] == 'C1b' and log.cruise()['start_date'] == '2026-10-01'
@@ -90,23 +88,13 @@ def test_read_cruise_does_not_change_the_file(tmp_path):
     assert read_cruise(tmp_path / 'missing.sqlite') is None
 
 
-def test_old_log_is_refused(tmp_path):
-    path = tmp_path / 'old.sqlite'
-    con = sqlite3.connect(path)
-    con.execute('CREATE TABLE equipconfig (row_id TEXT, short_code TEXT)')
-    con.commit()
-    con.close()
-    with pytest.raises(OldLogError):
-        create_log_db(path)
-
-
 def test_log_crud(tmp_path):
     log = LogDB(tmp_path / 'log.sqlite')
     a = log.insert('cruise', {'name': 'C1', 'leg': '1', 'objective': 'x'})
     log.insert('cruise', {'name': 'C2', 'leg': '2', 'objective': 'y'})
     rows = log.rows('cruise')
     assert [r['name'] for r in rows] == ['C1', 'C2']
-    assert rows[0]['summary'] == ''  # empty optional fields are '' as in the Shiny app
+    assert rows[0]['summary'] == ''  # empty optional fields are ''
     log.update('cruise', a, {'objective': 'changed'})
     assert log.rows('cruise')[0]['objective'] == 'changed'
     with pytest.raises(KeyError):
@@ -199,4 +187,4 @@ def test_export(api, tmp_path):
 def test_export_without_cruise(tmp_path):
     log = LogDB(tmp_path / 'log.sqlite')
     folder = export_all(log, Lookups(tmp_path / 'lookups.sqlite'), tmp_path / 'Exports')
-    assert (folder / 'NA_dives.csv').exists()  # as the Shiny app names them
+    assert (folder / 'NA_dives.csv').exists()
