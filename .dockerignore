@@ -1,8 +1,0 @@
-.git
-.gitignore
-configs/nginx
-# runtime data, mounted into the container instead
-data
-divelogging-db.sqlite
-lookups.sqlite
-Exports

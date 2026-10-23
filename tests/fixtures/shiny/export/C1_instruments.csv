@@ -1,0 +1,4 @@
+"id","name","serial_number","brand","model","type","retired"
+101,"Main camera","4830543","GoPro","Hero4","Camera",NA
+102,NA,"123456","ROWETech","DVL","DVL","2024-01-01"
+103,"Compass","12345","Generic","Compass","Compass",NA

@@ -1,0 +1,3 @@
+"row_id","cruise_name","leg","name","pilot","start_time","end_time","site_name","dive_config","objective","summary","note"
+"1afdaa21-6368-490a-8f17-a99e3948b2e1","C1","1","D1","7;9","2026-10-23T-10:00:00Z","2026-10-23T-11:30:00Z","Hecate","dc1","","",""
+"71a641a3-4beb-4312-81aa-49bf041cb7e0","C1","1","D2","7","2026-10-23T-13:00:00Z","2026-10-23T-13:45:00Z","","dc1","","edited",""

@@ -1,0 +1,4 @@
+"row_id","name","instrument_id","type","configuration","note"
+"23617d5d-258a-4f93-812d-219fd10d19ad","phantom",103,"platform","{}",""
+"b37eac4c-5115-42b4-a179-397dd1e34647","vector",103,"platform","{}",""
+"41997bb1-10ef-48bd-b48a-969b5dc0aa03","cam",101,"instrument","{'pan':10, 'tilt':-5.5}",""
