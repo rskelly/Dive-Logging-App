@@ -37,16 +37,29 @@ library(ggplot2)
 ##############################
 
 
-# Connect to db
-dbname <- 'divelogging-db.sqlite'
-db <- dbConnect(RSQLite::SQLite(), dbname)
-# Load all tables from db into workspace
-alltabs <- lapply(setNames(nm = dbListTables(db)), dbReadTable, conn = db)
-# Close db connection
-dbDisconnect(db)
+source('db.R')
+source('lookups.R')
 
-# Clone the existing db
-pool <- dbPool(db)
+# The log db, lookups db and exports live in the data folder (the working
+# directory unless DIVELOG_DATA_DIR is set)
+datadir <- Sys.getenv('DIVELOG_DATA_DIR', '.')
+dbname <- file.path(datadir, 'divelogging-db.sqlite')
+lookupsname <- file.path(datadir, 'lookups.sqlite')
+exportdir <- file.path(datadir, 'Exports')
+
+# MSEA ReST API that the lookups come from
+api_url <- Sys.getenv('MSEA_API_URL', 'http://localhost/api/v2')
+
+# Create the dbs or any missing tables
+create_log_db(dbname)
+create_lookups_db(lookupsname)
+
+# Connect to dbs
+pool <- dbPool(RSQLite::SQLite(), dbname = dbname)
+lookups_pool <- dbPool(RSQLite::SQLite(), dbname = lookupsname)
+
+# Incremented when the lookups are updated, so every session reloads them
+lookups_version <- reactiveVal(0)
 
 
 # Load equipment config variables from csv (add to and edit records in csv as needed)
@@ -81,7 +94,9 @@ appCSS <- list('.unique_star'='color: red',
 header <- dashboardHeader(title = 'NDST Dive Logging App',
                           tags$li(class = 'dropdown', 
                                   style='position:fixed;right:10px;top:10px;',
-                                  actionButton('export', 'Export', 
+                                  actionButton('update_lookups', 'Update lookups',
+                                               icon('rotate')),
+                                  actionButton('export', 'Export',
                                                icon('file-export'))
                           )
 )
@@ -91,7 +106,7 @@ sidebar <- dashboardSidebar(
   sidebarMenu(
     menuItem('Cruise', tabName = 'cruisetab', icon = icon('ship')),
     menuItem('Personnel', tabName = 'peopletab', icon = icon('user')),
-    menuItem('Equipment list', tabName = 'equiptab', icon = icon('list-ul')),
+    menuItem('Instruments', tabName = 'equiptab', icon = icon('list-ul')),
     menuItem('Equipment configurations', tabName = 'econfigtab', icon = icon('screwdriver')),
     menuItem('Dive configurations', tabName = 'dconfigtab', icon = icon('sliders')),
     menuItem('Dives', tabName = 'divetab', icon = icon('arrow-down-up-across-line')),
@@ -168,9 +183,7 @@ border-top-color:#364950;
               shinyjs::useShinyjs(),
               shinyjs::inlineCSS(appCSS),
               fluidRow(
-                actionButton('add_button_people', 'Add', icon('plus')),
-                actionButton('edit_button_people', 'Edit', icon('edit')),
-                actionButton('delete_button_people', 'Delete', icon('trash-alt'))
+                htmlOutput('lookups_status_people')
               ),
               br(),
               fluidRow(width='100%',
@@ -179,14 +192,12 @@ border-top-color:#364950;
             )
     ),
     tabItem(tabName = 'equiptab',
-            h2('Equipment list'),
+            h2('Instruments'),
             fluidPage(
               shinyjs::useShinyjs(),
               shinyjs::inlineCSS(appCSS),
               fluidRow(
-                actionButton('add_button_equipment', 'Add', icon('plus')),
-                actionButton('edit_button_equipment', 'Edit', icon('edit')),
-                actionButton('delete_button_equipment', 'Delete', icon('trash-alt'))
+                htmlOutput('lookups_status_equipment')
               ),
               br(),
               fluidRow(width='100%',
@@ -275,18 +286,100 @@ server <- function(input, output, session) {
   
   # Export all tables as csv
   observeEvent(input$export, {
-    # Load all tables from db into workspace
+    # Load all tables from db into workspace, with the people and instruments
+    # that their IDs refer to
     alltabs <- lapply(setNames(nm = dbListTables(pool)), dbReadTable, conn = pool)
+    alltabs[['people']] <- dbReadTable(lookups_pool, 'people')
+    alltabs[['instruments']] <- dbReadTable(lookups_pool, 'instruments')
     # Make export folder
-    datefolder <- as.character(format(Sys.Date(), format='%Y-%m-%d')) 
-    if(!dir.exists(file.path('Exports',datefolder))) 
-      dir.create(file.path('Exports',datefolder), recursive = T)
+    datefolder <- as.character(format(Sys.Date(), format='%Y-%m-%d'))
+    if(!dir.exists(file.path(exportdir,datefolder)))
+      dir.create(file.path(exportdir,datefolder), recursive = T)
     # Export all tables to csv
     for(i in names(alltabs)){
       name <- paste0(alltabs[['cruise']]$name[1], '_', i, '.csv')
-      write.csv(alltabs[[i]], file.path('Exports', datefolder, name), row.names = F)
+      write.csv(alltabs[[i]], file.path(exportdir, datefolder, name), row.names = F)
     }
   })
+
+
+  ##############################
+  #          Lookups           #
+  ##############################
+
+  # Replace the people and instruments with the API's. On failure the lookups
+  # are left as they were.
+  observeEvent(input$update_lookups, {
+    id <- showNotification('Updating lookups...', duration = NULL, closeButton = FALSE)
+    on.exit(removeNotification(id))
+    counts <- tryCatch(update_lookups(lookupsname, api_url), error = function(e) e)
+    if(inherits(counts, 'error')){
+      showModal(modalDialog(
+        title = 'Lookups not updated',
+        p('The people and instruments could not be downloaded from ', code(api_url),
+          '. The existing lookups have not been changed.'),
+        p(conditionMessage(counts)),
+        easyClose = TRUE
+      ))
+    } else {
+      lookups_version(lookups_version() + 1)
+      showNotification(sprintf('Lookups updated: %d people, %d instruments.',
+                               counts[['people']], counts[['instruments']]), type = 'message')
+    }
+  })
+
+  # When and where the lookups were last updated
+  lookups_info <- reactive({
+    lookups_version()
+    dbReadTable(lookups_pool, 'lookups_info')
+  })
+  lookups_status <- renderUI({
+    info <- lookups_info()
+    if(nrow(info) == 0){
+      HTML('<b>No lookups yet.</b> Click <i>Update lookups</i> while connected to the network.')
+    } else {
+      HTML(sprintf('Last updated %s from %s. Click <i>Update lookups</i> to refresh.',
+                   info$updated_on[1], info$source[1]))
+    }
+  })
+  output$lookups_status_people <- lookups_status
+  output$lookups_status_equipment <- lookups_status
+
+  # The lookups start empty and must be updated before use
+  observeEvent(lookups_info(), once = TRUE, {
+    if(nrow(lookups_info()) == 0){
+      showModal(modalDialog(
+        title = 'Update lookups',
+        'The people and instruments have not been downloaded yet. Click Update lookups ',
+        'while connected to the network before logging dives.',
+        easyClose = TRUE
+      ))
+    }
+  })
+
+  # Lookup tables, with labels for display and choices
+  people_df <- reactive({
+    lookups_version()
+    tmp <- dbReadTable(lookups_pool, 'people')
+    tmp$label <- paste(tmp$first_name, tmp$last_name)
+    tmp
+  })
+  equipment_df <- reactive({
+    lookups_version()
+    tmp <- dbReadTable(lookups_pool, 'instruments')
+    tmp$label <- paste0(coalesce(tmp$name, paste(tmp$brand, tmp$model)), ' (', tmp$serial_number, ')',
+                        ifelse(is.na(tmp$retired), '', ' [retired]'))
+    tmp
+  })
+
+  # Replace ';'-separated person IDs with names
+  pilotNames <- function(pilot) {
+    people <- people_df()
+    vapply(strsplit(pilot, ';'), function(ids) {
+      names <- people$label[match(ids, people$id)]
+      paste(coalesce(names, ids), collapse = ', ')
+    }, character(1))
+  }
   
   
   ##############################
@@ -313,15 +406,13 @@ server <- function(input, output, session) {
   dives_df <- makeReactive('dives')
   transects_df <- makeReactive('transects')
   cruise_df <- makeReactive('cruise')
-  equipment_df <- makeReactive('equipment')
-  people_df <- makeReactive('people')
   equipconfig_df <- makeReactive('equipconfig')
   diveconfig_df <- makeReactive('diveconfig')
   
   
   # Display dives table
   output$responses_dives <- DT::renderDataTable({
-    table <- dives_df() %>% select(-row_id) 
+    table <- dives_df() %>% select(-row_id) %>% mutate(pilot = pilotNames(pilot))
     table <- datatable(table, rownames = FALSE, selection = 'single',
                        options = list(searching = FALSE, lengthChange = FALSE)
     )
@@ -345,23 +436,25 @@ server <- function(input, output, session) {
   
   # Display equipment table
   output$responses_equipment <- DT::renderDataTable({
-    table <- equipment_df() %>% select(-row_id)
-    table <- datatable(table, rownames = FALSE, selection = 'single',
-                       options = list(searching = FALSE, lengthChange = FALSE)
+    table <- equipment_df() %>% select(name, serial_number, brand, model, type, retired, id)
+    table <- datatable(table, rownames = FALSE, selection = 'none',
+                       options = list(lengthChange = FALSE)
     )
   })
-  
+
   # Display personnel table
   output$responses_people <- DT::renderDataTable({
-    table <- people_df() %>% select(-row_id)
-    table <- datatable(table, rownames = FALSE, selection = 'single',
-                       options = list(searching = FALSE, lengthChange = FALSE)
+    table <- people_df() %>% select(first_name, last_name, id)
+    table <- datatable(table, rownames = FALSE, selection = 'none',
+                       options = list(lengthChange = FALSE)
     )
   })
-  
+
   # Display equip config table
   output$responses_equipconfig <- DT::renderDataTable({
-    table <- equipconfig_df() %>% select(-row_id)
+    table <- equipconfig_df() %>% select(-row_id) %>%
+      mutate(instrument = equipment_df()$label[match(instrument_id, equipment_df()$id)],
+             .after = name)
     table <- datatable(table, rownames = FALSE, selection = 'single',
                        options = list(searching = FALSE, lengthChange = FALSE)
     )
@@ -429,35 +522,11 @@ server <- function(input, output, session) {
     return(dftable)
   })
   
-  # equipment
-  equipment_FormData <- reactive({
-    dftable <- data.frame(row_id = UUIDgenerate(),
-                          short_code = input$equip_shortcode,
-                          brand = input$equip_brand,
-                          model = input$equip_model,
-                          serial_number = input$equip_serialnumber,
-                          type = input$equip_type,
-                          note = input$equip_note,
-                          stringsAsFactors = FALSE)
-    return(dftable)
-  })
-  
-  # people
-  people_FormData <- reactive({
-    dftable <- data.frame(row_id = UUIDgenerate(),
-                          initials = input$initials,
-                          first_name = input$first_name,
-                          last_name = input$last_name,
-                          email = input$email,
-                          stringsAsFactors = FALSE)
-    return(dftable)
-  })
-  
   # equip config
   equipconfig_FormData <- reactive({
     dftable <- data.frame(row_id = UUIDgenerate(),
                           name = input$equipconfig_name,
-                          short_code = input$equipconfig_shortcode,
+                          instrument_id = as.integer(input$equipconfig_instrument),
                           type = input$equipconfig_type,
                           configuration = input$equipconfig_string,
                           note = input$equipconfig_note,
@@ -501,10 +570,7 @@ server <- function(input, output, session) {
   obsFieldsMandatory(table='transects', fields=transectfields)
   obsFieldsMandatory(table='transects', fields=transectfields, prefix='dive')
   obsFieldsMandatory(table='cruise', fields=c('cruise_name', 'cruise_leg', 'cruise_objective'))
-  obsFieldsMandatory(table='equipment', fields=c('equip_shortcode', 'equip_brand', 'equip_model','equip_serialnumber',
-                                                 'equip_type'))
-  obsFieldsMandatory(table='people', fields=c('initials', 'first_name', 'last_name','email'))
-  obsFieldsMandatory(table='equipconfig', fields=c('equipconfig_name', 'equipconfig_shortcode', 'equipconfig_type'))
+  obsFieldsMandatory(table='equipconfig', fields=c('equipconfig_name', 'equipconfig_instrument', 'equipconfig_type'))
   obsFieldsMandatory(table='diveconfig', fields=c('diveconfig_name', 'ship_config', 'sub_config', 
                                                   'ship_instrument_configs','sub_instrument_configs'))
   
@@ -539,7 +605,8 @@ server <- function(input, output, session) {
                   cellArgs = list(style = 'vertical-align: top'),
                   selectInput('dive_diveconfig', labelMandatory('Dive config'), 
                               choices=diveconfig_df()$name, selected=diveconfig_df()$name[nrow(diveconfig_df())]),
-                  selectInput('dive_pilot', labelMandatory('Pilot'), choices=people_df()$initials, selected=NULL, multiple=T),
+                  selectInput('dive_pilot', labelMandatory('Pilot'), choices=setNames(people_df()$id, people_df()$label),
+                              selected=NULL, multiple=T),
                 ),
                 splitLayout(
                   cellWidths = c('300px', '100px'),
@@ -655,54 +722,6 @@ server <- function(input, output, session) {
     )
   }
   
-  # Form for equipment data entry
-  equipment_entryform <- function(button_id){
-    showModal(
-      modalDialog(
-        h2('Equipment'),
-        div(id=('equipment_entryform'),
-            tags$head(tags$style('.modal-dialog{ width:400px}')),
-            tags$head(tags$style(HTML('.shiny-split-layout > div {overflow: visible}'))),
-            fluidPage(
-              fluidRow(
-                textInput('equip_shortcode', labelMandatory('Short code'), ''),
-                textInput('equip_brand', labelMandatory('Brand'),  ''),
-                textInput('equip_model', labelMandatory('Model'), ''),
-                textInput('equip_serialnumber', labelMandatory('Serial number'), ''),
-                textInput('equip_type',labelMandatory('Type'), ''),
-                textInput('equip_note', 'Note', ''),
-                helpText(labelMandatory(''), paste('Mandatory field')),
-                actionButton(button_id, 'Submit', class = 'btn-warning')
-              )
-            )
-        )
-      )
-    )
-  }
-  
-  # Form for personnel data entry
-  people_entryform <- function(button_id){
-    showModal(
-      modalDialog(
-        h2('Personnel'),
-        div(id=('people_entryform'),
-            tags$head(tags$style('.modal-dialog{ width:400px}')),
-            tags$head(tags$style(HTML('.shiny-split-layout > div {overflow: visible}'))),
-            fluidPage(
-              fluidRow(
-                textInput('initials', labelMandatory('Initials'), ''),
-                textInput('first_name', labelMandatory('First name'),  ''),
-                textInput('last_name', labelMandatory('Last name'), ''),
-                textInput('email', labelMandatory('Email'), ''),
-                helpText(labelMandatory(''), paste('Mandatory field')),
-                actionButton(button_id, 'Submit', class = 'btn-warning')
-              )
-            )
-        )
-      )
-    )
-  }
-  
   # Form for equipment configuration data entry
   equipconfig_entryform <- function(button_id, dismiss_id='dismiss_equipconfig'){
     showModal(
@@ -714,7 +733,8 @@ server <- function(input, output, session) {
             fluidPage(
               fluidRow(
                 selectInput('equipconfig_type', labelMandatory('Type'), c('instrument','platform')),
-                selectInput('equipconfig_shortcode', labelMandatory('Short code'),  choices=equipment_df()$short_code, selected=NULL),
+                selectInput('equipconfig_instrument', labelMandatory('Instrument'),
+                            choices=setNames(equipment_df()$id, equipment_df()$label), selected=NULL),
                 textInput('equipconfig_name', labelMandatory('Name'), ''),
                 splitLayout(
                   cellWidths = c('150px', '80px', '80px'),
@@ -952,8 +972,6 @@ server <- function(input, output, session) {
   obsEvents(table='transects')
   obsEvents(table='transects', prefix='dive') # for submit and dismiss wihtin transect subform of dive
   obsEvents(table='cruise')
-  obsEvents(table='equipment')
-  obsEvents(table='people')
   obsEvents(table='equipconfig')
   obsEvents(table='diveconfig')
   
@@ -1201,97 +1219,6 @@ observeEvent(input$submit_edit_cruise, priority = 20, {
 
 
 ###################################
-#          Equipment Edit         #
-###################################
-
-# Edit data
-# Update form values in the selected row.
-observeEvent(input$edit_button_equipment, priority = 20,{
-  # Fetch db data
-  SQL_df <- dbReadTable(pool, 'equipment')
-  # Warnings for selection
-  showModal(
-    if(length(input$responses_equipment_rows_selected) < 1){
-      modalDialog(
-        paste('Please select a row' ),easyClose = TRUE)
-    })     # If one row is selected open form and update
-  if(length(input$responses_equipment_rows_selected) == 1 ){
-    # Form
-    equipment_entryform('submit_edit_equipment')
-    # Disable edit of short code
-    shinyjs::disable(id = 'equip_shortcode')
-    # Update
-    updateTextInput(session, 'equip_shortcode', value = SQL_df[input$responses_equipment_rows_selected, 'short_code'])
-    updateTextInput(session,'equip_brand', value = SQL_df[input$responses_equipment_rows_selected, 'brand'])
-    updateTextInput(session,'equip_model', value = SQL_df[input$responses_equipment_rows_selected, 'model'])
-    updateTextInput(session,'equip_serialnumber', value = SQL_df[input$responses_equipment_rows_selected, 'serial_number'])
-    updateTextInput(session, 'equip_type', value = SQL_df[input$responses_equipment_rows_selected, 'type'])
-    updateTextInput(session, 'equip_note', value = SQL_df[input$responses_equipment_rows_selected, 'note'])
-  }
-})
-
-# Updates the selected row with the values that were entered in the form, based on the row last clicked.
-observeEvent(input$submit_edit_equipment, priority = 20, {
-  # Get db data
-  SQL_df <- dbReadTable(pool, 'equipment')
-  row_id <- SQL_df[input$responses_equipment_row_last_clicked, 'row_id']
-  dbExecute(pool, sprintf('UPDATE "equipment" SET "brand" = ?, "model" = ?, "serial_number" = ?,
-                            "type" = ?, "note" = ? WHERE "row_id" = ("%s")', row_id),
-            param = list(input$equip_brand,
-                         input$equip_model,
-                         input$equip_serialnumber,
-                         input$equip_type,
-                         input$equip_note))
-  removeModal()
-  
-})
-
-
-
-###################################
-#           People Edit           #
-###################################
-
-# Edit data
-# Update form values in the selected row.
-observeEvent(input$edit_button_people, priority = 20,{
-  # Fetch db data
-  SQL_df <- dbReadTable(pool, 'people')
-  # Warnings for selection
-  showModal(
-    if(length(input$responses_people_rows_selected) < 1){
-      modalDialog(
-        paste('Please select a row' ),easyClose = TRUE)
-    })     # If one row is selected open form and update
-  if(length(input$responses_people_rows_selected) == 1 ){
-    # Form
-    people_entryform('submit_edit_people')
-    # Disable edit of intitals
-    shinyjs::disable(id = 'initials')
-    # Update
-    updateTextInput(session, 'initials', value = SQL_df[input$responses_people_rows_selected, 'initials'])
-    updateTextInput(session,'first_name', value = SQL_df[input$responses_people_rows_selected, 'first_name'])
-    updateTextInput(session,'last_name', value = SQL_df[input$responses_people_rows_selected, 'last_name'])
-    updateTextInput(session,'email', value = SQL_df[input$responses_people_rows_selected, 'email'])
-  }
-})
-
-# Updates the selected row with the values that were entered in the form, based on the row last clicked.
-observeEvent(input$submit_edit_people, priority = 20, {
-  # Get db data
-  SQL_df <- dbReadTable(pool, 'people')
-  row_id <- SQL_df[input$responses_people_row_last_clicked, 'row_id']
-  dbExecute(pool, sprintf('UPDATE "people" SET "first_name" = ?, "last_name" = ?, "email" = ?
-                          WHERE "row_id" = ("%s")', row_id),
-            param = list(input$first_name,
-                         input$last_name,
-                         input$email))
-  removeModal()
-  
-})
-
-
-###################################
 #        Equipconfig Edit         #
 ###################################
 
@@ -1317,7 +1244,7 @@ observeEvent(input$edit_button_equipconfig, priority = 20,{
     # Update reactive value
     config_list(cs_vector)
     # Update
-    updateSelectInput(session, 'equipconfig_shortcode', selected = SQL_df[input$responses_equipconfig_rows_selected, 'short_code'])
+    updateSelectInput(session, 'equipconfig_instrument', selected = SQL_df[input$responses_equipconfig_rows_selected, 'instrument_id'])
     updateSelectInput(session, 'equipconfig_type', selected = SQL_df[input$responses_equipconfig_rows_selected, 'type'])
     updateTextInput(session,'equipconfig_name', value = SQL_df[input$responses_equipconfig_rows_selected, 'name'])
     updateSelectInput(session,'equipconfig_variable', choices=config_variables, selected=NULL)
@@ -1332,9 +1259,9 @@ observeEvent(input$submit_edit_equipconfig, priority = 20, {
   # Get db data
   SQL_df <- dbReadTable(pool, 'equipconfig')
   row_id <- SQL_df[input$responses_equipconfig_row_last_clicked, 'row_id']
-  dbExecute(pool, sprintf('UPDATE "equipconfig" SET "short_code" = ?, "type" = ?, "configuration" = ?, "note" = ?
+  dbExecute(pool, sprintf('UPDATE "equipconfig" SET "instrument_id" = ?, "type" = ?, "configuration" = ?, "note" = ?
                           WHERE "row_id" = ("%s")', row_id),
-            param = list(input$equipconfig_shortcode,
+            param = list(as.integer(input$equipconfig_instrument),
                          input$equipconfig_type,
                          input$equipconfig_string,
                          input$equipconfig_note))
@@ -1472,6 +1399,7 @@ output$plot3 <- renderPlot({
   tmp$start_time <- strptime(tmp$start_time, format='%Y-%m-%dT-%TZ', tz='GMT')
   tmp$end_time <- strptime(tmp$end_time, format='%Y-%m-%dT-%TZ', tz='GMT')
   tmp$diff <- as.numeric(difftime(tmp$end_time, tmp$start_time, units = 'hours'))
+  tmp$pilot <- pilotNames(tmp$pilot)
   a <- aggregate(diff ~ pilot, sum, data=tmp)
   # Plot
   oplot <- ggplot(a) + 

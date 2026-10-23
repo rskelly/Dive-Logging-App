@@ -1,35 +1,29 @@
-# Build base database
+# Create the tables of the dive logging database
 
 # Packages
 library(RSQLite)
-library(uuid)
 
 
-# Select name of db
-# Edit 'cruisename'
-dbname <- 'cruisename-divelogging-db.sqlite'
+# Create any missing tables in the log db at 'dbname'. The app calls this on
+# start-up, so a new survey starts by moving the old db file out of the way.
+# People and instruments are not stored here: they are lookups (see lookups.R)
+# and the log stores their IDs.
+create_log_db <- function(dbname) {
 
-
-
-# Create new db or return error
-if(!file.exists(dbname)){
-  
-  # Create db
+  # Create or open db
   mydb <- dbConnect(RSQLite::SQLite(), dbname)
-  
-  # Create cruise table
+  on.exit(dbDisconnect(mydb))
+
+  # Logs made before the lookups came from the API reference equipment by short code
+  if(dbExistsTable(mydb, 'equipconfig') && !'instrument_id' %in% dbListFields(mydb, 'equipconfig')){
+    stop('"', dbname, '" was created by an older version of the app ',
+         '(equipment configurations use short codes). Move it aside to start a new log.')
+  }
+
+  # Empty tables to fill
   cruise <- data.frame(row_id=character(),name=character(0),leg=character(0),
                        objective=character(0), summary=character(0), note=character(0))
-  
-  # Load people and equipment list
-  people <- read.csv('people.csv')
-  equipment <- read.csv('equipment.csv')
-  
-  # Add row_id fields to people and equip lists
-  people <- data.frame(row_id=UUIDgenerate(n=nrow(people)), people)
-  equipment <- data.frame(row_id=UUIDgenerate(n=nrow(equipment)), equipment)
-  
-  # Create empty tables to fill
+  # pilot is a ';'-separated list of person IDs
   dives <- data.frame(row_id=character(),cruise_name=character(0),leg=character(0),
                       name=character(0),pilot=character(0),start_time=character(0),
                       end_time=character(0),site_name=character(0),dive_config=character(0),
@@ -37,25 +31,16 @@ if(!file.exists(dbname)){
   transects <- data.frame(row_id=character(),cruise_name=character(0),leg=character(0),
                           dive_name=character(0),name=character(0),start_time=character(0),
                           end_time=character(0),objective=character(0),summary=character(0),note=character(0))
-  equipconfig <- data.frame(row_id=character(),name=character(0),short_code=character(0),
+  equipconfig <- data.frame(row_id=character(),name=character(0),instrument_id=integer(0),
                             type=character(0),configuration=character(0),note=character(0))
   diveconfig <- data.frame(row_id=character(),name=character(0),ship_config=character(0),
-                           sub_config=character(0), ship_instrument_configs=character(0), 
+                           sub_config=character(0), ship_instrument_configs=character(0),
                            sub_instrument_configs=character(0),note=character(0))
-  
-  # Write tables
-  dbWriteTable(mydb, 'cruise', cruise, overwrite=F)
-  dbWriteTable(mydb, 'people', people, overwrite=F)
-  dbWriteTable(mydb, 'equipment', equipment, overwrite=F)
-  dbWriteTable(mydb, 'dives', dives, overwrite=F)
-  dbWriteTable(mydb, 'transects', transects, overwrite=F)
-  dbWriteTable(mydb, 'equipconfig', equipconfig, overwrite=F)
-  dbWriteTable(mydb, 'diveconfig', diveconfig, overwrite=F)
-  
-  
-  # Disconnect
-  dbDisconnect(mydb)
-  
-} else {
-  stop('"', dbname, '" already exists! ', 'Rename and try again.')
+  tables <- list(cruise=cruise, dives=dives, transects=transects,
+                 equipconfig=equipconfig, diveconfig=diveconfig)
+
+  # Write tables that don't exist yet
+  for(i in names(tables)){
+    if(!dbExistsTable(mydb, i)) dbWriteTable(mydb, i, tables[[i]])
+  }
 }

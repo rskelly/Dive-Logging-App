@@ -1,1 +1,6 @@
 divelogging-db.sqlite
+lookups.sqlite
+Exports/
+# log db, lookups db and exports written by the container
+data/*
+!data/.gitkeep
