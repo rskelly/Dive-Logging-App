@@ -40,6 +40,8 @@ another computer. Updating the app doesn't touch your logs.
 
 Tips
 ----
+- The View menu shows the people, instruments and platforms from the lookups, and
+  Checks (totals, warnings and charts for the current cruise), each in its own window.
 - Times are in UTC. Click "Now", or pick a date from the field's drop-down.
 - In a dive configuration, the "+" next to the sub and the instrument lists adds an
   equipment configuration without leaving the form.

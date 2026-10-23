@@ -20,7 +20,7 @@ from .pages import ChecksPage, LookupPage, TablePage, pilot_names
 from .properties import edit_properties
 
 # Pages that show the current cruise's log, disabled while none is open
-LOG_PAGES = {'Equipment configurations', 'Dive configurations', 'Dives', 'Transects', 'Checks'}
+LOG_PAGES = {'Equipment configurations', 'Dive configurations', 'Dives', 'Transects'}
 
 
 def _column(name, key=None):
@@ -55,15 +55,16 @@ class MainWindow(QMainWindow):
         self.export_action = self._action(toolbar, 'Export', self.export, "Export the cruise's tables as CSV")
         toolbar.addSeparator()
         self._action(toolbar, 'Open log folder', self.open_log_folder)
-        menu = QMenu(self)
-        menu.addAction('Settings...', self.edit_settings)
-        menu.addAction('Configuration Properties...', lambda: edit_properties(self.store, self))
-        settings_button = QToolButton()
-        settings_button.setText('Settings')
-        settings_button.setMenu(menu)
-        settings_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        toolbar.addWidget(settings_button)
-        self.settings_menu = menu
+        # Read-only views, each in its own window
+        self.views = {}
+        self.view_menu = self._menu(toolbar, 'View')
+        for label in ('Personnel', 'Instruments', 'Platforms'):
+            self.view_menu.addAction(label, lambda label=label: self.show_view(label))
+        self.view_menu.addSeparator()
+        self.checks_action = self.view_menu.addAction('Checks', lambda: self.show_view('Checks'))
+        self.settings_menu = self._menu(toolbar, 'Settings')
+        self.settings_menu.addAction('Settings...', self.edit_settings)
+        self.settings_menu.addAction('Configuration Properties...', lambda: edit_properties(self.store, self))
 
         self.status = QLabel()
         self.statusBar().addWidget(self.status, 1)
@@ -77,6 +78,35 @@ class MainWindow(QMainWindow):
             action.setToolTip(tip)
         toolbar.addAction(action)
         return action
+
+    def _menu(self, toolbar, text):
+        """A toolbar button that drops down a menu."""
+        menu = QMenu(self)
+        button = QToolButton()
+        button.setText(text)
+        button.setMenu(menu)
+        button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        toolbar.addWidget(button)
+        return menu
+
+    def show_view(self, label):
+        """Open (or bring forward) the window for a read-only view."""
+        window = self.views.get(label)
+        if window is None:
+            page = {'Personnel': lambda: LookupPage(self.store, 'Personnel', 'people'),
+                    'Instruments': lambda: LookupPage(self.store, 'Instruments', 'instruments'),
+                    'Platforms': lambda: LookupPage(self.store, 'Platforms', 'platforms'),
+                    'Checks': lambda: ChecksPage(self.store)}[label]()
+            window = QDialog(self, Qt.WindowType.Window)
+            window.setWindowTitle(f'{label} - NDST Dive Logging App')
+            QVBoxLayout(window).addWidget(page)
+            window.resize(1000, 700)
+            window.page = page
+            self.views[label] = window
+        window.show()
+        window.raise_()
+        window.activateWindow()
+        return window
 
     def _pages(self):
         store = self.store
@@ -97,9 +127,6 @@ class MainWindow(QMainWindow):
         c = _column
         return [
             ('Cruises', CruisesPage(store)),
-            ('Personnel', LookupPage(store, 'Personnel', 'people')),
-            ('Instruments', LookupPage(store, 'Instruments', 'instruments')),
-            ('Platforms', LookupPage(store, 'Platforms', 'platforms')),
             ('Equipment configurations', TablePage(store, 'Instrument and platform configurations', 'equipconfig', [
                 c('Name', 'name'), ('Equipment', equipment), c('Type', 'type'),
                 c('Configuration', 'configuration'), c('Note', 'note')], EquipconfigForm)),
@@ -113,7 +140,6 @@ class MainWindow(QMainWindow):
             ('Transects', TablePage(store, 'Transects', 'transects', [
                 c('Dive', 'dive_name'), c('Name', 'name'), c('Start time', 'start_time'), c('End time', 'end_time'),
                 c('Objective', 'objective'), c('Summary', 'summary'), c('Note', 'note')], TransectForm)),
-            ('Checks', ChecksPage(store)),
         ]
 
     def _show_cruise(self):
@@ -129,6 +155,9 @@ class MainWindow(QMainWindow):
         if cruise is None and self.nav.currentItem() and self.nav.currentItem().text() in LOG_PAGES:
             self.nav.setCurrentRow(0)
         self.export_action.setEnabled(cruise is not None)
+        self.checks_action.setEnabled(cruise is not None)
+        if cruise is None and 'Checks' in self.views:
+            self.views['Checks'].hide()
         info = self.store.lookups.info()
         lookups = f"lookups updated {info['updated_on']}" if info else 'no lookups yet'
         where = f'{name}: {self.store.log.path}' if cruise else 'No cruise selected: create or select one in Cruises'

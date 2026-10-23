@@ -57,7 +57,7 @@ divelog/
   export.py     CSV export
   formats.py    time (read both formats), config-string, ID-list helpers
   ui/
-    main_window.py   sidebar + stacked pages, toolbar, settings dialog
+    main_window.py   sidebar of editable pages, toolbar with View and Settings menus, settings dialog
     cruises.py       the Cruises page: create, open, select, edit, move, remove
     pages.py         generic Add/Edit/Delete page, read-only lookup pages, Checks
     forms.py         cruise, equipconfig, diveconfig, dive, transect dialogs
@@ -235,3 +235,4 @@ Added after the first version, at the user's request: a cruise is loaded into a 
 - **Dive configurations** need only a name and a sub; ship and sub instruments are optional. A "+" beside each field opens the equipment configuration form, preset to a platform or an instrument, and chooses the new configuration.
 - **Times** use a date-time picker (calendar drop-down, UTC) with a **Now** button.
 - **Configuration properties** (the variables an equipment configuration can set, with units and descriptions) are kept in `settings.json`, seeded from `config-variables.csv`, and edited from **Settings > Configuration Properties** or a "+" beside the variable drop-down, which then selects the property just added.
+- **Read-only views in a View menu.** The sidebar holds only editable pages (Cruises, equipment and dive configurations, dives, transects). Personnel, Instruments, Platforms and Checks are in a **View** menu before Settings, each opening in its own window so it can stay open beside the main window.

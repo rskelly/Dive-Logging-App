@@ -33,7 +33,7 @@ Under development
 Users extract a zip and start `DiveLogging.bat`. The batch file finds Python 3.10 or later (asking for its path, or to install it, if it can't), then runs `run.py --setup`. That creates a virtual environment in `%LOCALAPPDATA%\DiveLogging\venv` and installs the pinned libraries from `requirements.txt`, but only on first use, after an update that changes the requirements, or after Python changes. A failed setup keeps the previous environment. The app then starts with that environment's `pythonw.exe`.
 
 ## Cruises
-Everything is logged in the current cruise. The **Cruises** page lists the cruises: create one (**New cruise**), add a log made elsewhere (**Open log file**, e.g. on another laptop), **Select** the one to log, **Edit** its properties, or **Remove** it from the list (its log file is kept). The configuration, dive, transect and checks pages are disabled until a cruise is selected, and the app reopens the last cruise on start.
+Everything is logged in the current cruise. The **Cruises** page lists the cruises: create one (**New cruise**), add a log made elsewhere (**Open log file**, e.g. on another laptop), **Select** the one to log, **Edit** its properties, or **Remove** it from the list (its log file is kept). The configuration, dive and transect pages (and **View > Checks**) are disabled until a cruise is selected, and the app reopens the last cruise on start.
 
 A cruise has a name, leg, start and end dates, ship (a platform from the lookups), objective, summary and note. Each cruise has its own log, created in the default log folder when the cruise is created (named `<cruise>_leg<leg>.sqlite`; the folder can be changed in Settings). Editing a cruise can also move its log: the user confirms the move, and if they decline or it fails, the log stays where it was. A log that was moved outside the app can be located again from the list.
 
@@ -57,7 +57,7 @@ A cruise's log keeps its properties in its `cruise` table, so the log describes 
 - **Times** are UTC. Each has a calendar drop-down and a **Now** button, and must be set to save a dive or transect.
 - **Configuration properties** are the variables an equipment configuration can set (pan, tilt, offsets, ...), with units and descriptions. They're edited from **Settings > Configuration Properties**, or the "+" next to the variable drop-down in the equipment configuration form, which then selects the property just added. They're kept in `settings.json`; the first run starts with `config-variables.csv`.
 - Duplicate dive, transect and configuration names can't be saved. New transects are numbered after their dive's existing ones, and can be added from the dive form, also while editing a dive.
-- **Checks** shows totals, warnings (missing dives, duplicate names, unreadable times, records that end before they start) and charts.
+- The sidebar holds the pages you edit: Cruises, configurations, dives and transects. Read-only views are in the **View** menu, each in its own window: **Personnel**, **Instruments** and **Platforms** (the lookups, searchable), and **Checks** (totals, warnings about missing dives, duplicate names, unreadable times and records that end before they start, and charts) for the current cruise.
 
 ## Log format
 - Times are ISO 8601 UTC (`2026-10-23T19:46:23Z`).

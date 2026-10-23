@@ -449,11 +449,29 @@ def _enabled(item):
 def test_log_pages_are_disabled_without_a_cruise(store):
     window = MainWindow(store, store.settings)
     disabled = {window.nav.item(i).text() for i in range(window.nav.count()) if not _enabled(window.nav.item(i))}
-    assert disabled == {'Equipment configurations', 'Dive configurations', 'Dives', 'Transects', 'Checks'}
-    assert not window.export_action.isEnabled()
+    assert disabled == {'Equipment configurations', 'Dive configurations', 'Dives', 'Transects'}
+    assert not window.export_action.isEnabled() and not window.checks_action.isEnabled()
     store.create_cruise(CRUISE, store.default_log_path('C1', '1'))
     assert all(_enabled(window.nav.item(i)) for i in range(window.nav.count()))
-    assert window.windowTitle().startswith('C1 leg 1')
+    assert window.windowTitle().startswith('C1 leg 1') and window.checks_action.isEnabled()
+    window.close()
+
+
+def test_read_only_views_are_in_the_view_menu(store, cruise):
+    window = MainWindow(store, store.settings)
+    nav = [window.nav.item(i).text() for i in range(window.nav.count())]
+    assert nav == ['Cruises', 'Equipment configurations', 'Dive configurations', 'Dives', 'Transects']
+    assert [a.text() for a in window.view_menu.actions() if a.text()] == ['Personnel', 'Instruments', 'Platforms', 'Checks']
+    platforms = window.show_view('Platforms')
+    assert platforms.isVisible() and platforms.page.table.rowCount() == 3
+    assert window.show_view('Platforms') is platforms  # one window per view
+    checks = window.show_view('Checks')
+    store.log.insert('dives', {'name': 'D1', 'start_time': '2026-10-23T10:00:00Z', 'end_time': '2026-10-23T11:00:00Z'})
+    store.notify()
+    assert checks.page.totals['dives'].value.text() == '1'
+    store.close_cruise()
+    store.notify()
+    assert not checks.isVisible()  # no cruise, no checks
     window.close()
 
 
